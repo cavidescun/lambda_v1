@@ -297,9 +297,7 @@ Los logs están organizados por prefijos:
 
 Para soporte técnico o preguntas:
 
-- **Issues**: Crear issue en GitHub
-- **Email**: soporte@ejemplo.com
-- **Documentación**: Wiki del proyecto
+- **Email**: camilo_vides@cun.edu.co
 
 ## 📄 Licencia
 
