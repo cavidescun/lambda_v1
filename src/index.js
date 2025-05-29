@@ -1,3 +1,4 @@
+
 const { extractDocumentUrls } = require("./services/extractUrl");
 const { downloadDocuments } = require('./services/downloadDocuments')
 const {cleanupTempFiles} = require('./utils/tempStorage')
@@ -5,21 +6,34 @@ const { processDocuments} = require('./services/processDocument')
 
 exports.handler = async (event, context) => {
   try {
+    console.log('[MAIN] Iniciando procesamiento...');
+    
     let requestBody;
     if (typeof event.body === "string") {
       requestBody = JSON.parse(event.body);
     } else {
       requestBody = event.body || {};
     }
-    const documentsURl = extractDocumentUrls(requestBody);
-    const downloadedFiles = await downloadDocuments(Object.values(documentsURl));
-    const result = await processDocuments(requestBody,documentsURl,downloadedFiles);
-    return formatResponse(200, result)
+    console.log('[MAIN] Request body procesado');
+
+    const documentsUrl = extractDocumentUrls(requestBody);
+    const downloadedFiles = await downloadDocuments(Object.values(documentsUrl));
+    const result = await processDocuments(requestBody, downloadedFiles, documentsUrl);
+    return formatResponse(200, result);
+    
   } catch (error) {
+    console.error("[MAIN] Error:", error.message);
     console.error("[MAIN] Stack:", error.stack);
-  }finally{
-  cleanupTempFiles();
-  console.log('[MAIN] Proceso finalizado')
+
+    return formatResponse(500, {
+      error: "Error interno del servidor",
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+    
+  } finally {
+    cleanupTempFiles();
+    console.log('[MAIN] Proceso finalizado');
   }
 };
 
@@ -37,5 +51,6 @@ function formatResponse(statusCode, body) {
     body: JSON.stringify(body, null, statusCode >= 400 ? 2 : 0),
   };
 
+  console.log(`[MAIN] Respuesta generada - Status: ${statusCode}`);
   return response;
 }

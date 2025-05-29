@@ -1,5 +1,4 @@
 const { google } = require("googleapis");
-require("dotenv").config();
 
 async function googleAuth() {
   try {
@@ -10,7 +9,7 @@ async function googleAuth() {
     const oauth2Client = new google.auth.OAuth2(
       clientId,
       clientSecret,
-      "urn:ietf:wg:oauth:2.0:oob" // o una URL de redirección válida si usas web auth
+      "urn:ietf:wg:oauth:2.0:oob"
     );
 
     oauth2Client.setCredentials({ refresh_token: refreshToken });
