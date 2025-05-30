@@ -1,26 +1,37 @@
-
 const { extractDocumentUrls } = require("./services/extractUrl");
-const { downloadDocuments } = require('./services/downloadDocuments')
-const {cleanupTempFiles} = require('./utils/tempStorage')
-const { processDocuments} = require('./services/processDocument')
+const { downloadDocuments } = require("./services/downloadDocuments");
+const { cleanupTempFiles } = require("./utils/tempStorage");
+const { processDocuments } = require("./services/processDocument");
+const { insertDBData } = require("./services/databaseService");
 
 exports.handler = async (event, context) => {
   try {
-    console.log('[MAIN] Iniciando procesamiento...');
-    
+    console.log("[MAIN] Iniciando procesamiento...");
+
     let requestBody;
     if (typeof event.body === "string") {
       requestBody = JSON.parse(event.body);
     } else {
       requestBody = event.body || {};
     }
-    console.log('[MAIN] Request body procesado');
+    console.log("[MAIN] Request body procesado");
 
     const documentsUrl = extractDocumentUrls(requestBody);
-    const downloadedFiles = await downloadDocuments(Object.values(documentsUrl));
-    const result = await processDocuments(requestBody, downloadedFiles, documentsUrl);
-    return formatResponse(200, result);
-    
+    const downloadedFiles = await downloadDocuments(
+      Object.values(documentsUrl)
+    );
+    const result = await processDocuments(
+      requestBody,
+      downloadedFiles,
+      documentsUrl
+    );
+    const insertDBResult = await insertDBData(result);
+
+    if (insertDBResult.success) {
+      return formatResponse(200, result);
+    } else {
+      return formatResponse(400, result);
+    }
   } catch (error) {
     console.error("[MAIN] Error:", error.message);
     console.error("[MAIN] Stack:", error.stack);
@@ -28,12 +39,11 @@ exports.handler = async (event, context) => {
     return formatResponse(500, {
       error: "Error interno del servidor",
       message: error.message,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
-    
   } finally {
     cleanupTempFiles();
-    console.log('[MAIN] Proceso finalizado');
+    console.log("[MAIN] Proceso finalizado");
   }
 };
 
