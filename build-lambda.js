@@ -112,7 +112,6 @@ async function showResult() {
   console.log('2. Handler: src/index.handler');
   console.log('3. Runtime: nodejs18.x');
   console.log('4. Configurar variables de entorno');
-  console.log('5. Ejecutar: npm run setup-tokens');
 }
 
 // Función principal
