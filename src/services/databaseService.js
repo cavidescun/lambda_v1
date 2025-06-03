@@ -2,7 +2,7 @@ const sql = require("mssql");
 
 const connection = null;
 const dbConfig = {
-  user: process.env.SQLSERVER_USER || "",
+  user: process.env.SQLSERVER_USERNAME || "",
   password: process.env.SQLSERVER_PASSWORD || "",
   server: process.env.SQLSERVER_HOST || "",
   database: process.env.SQLSERVER_DATABASE || "",
