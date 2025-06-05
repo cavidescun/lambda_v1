@@ -308,7 +308,7 @@ flowchart TD
 
 | ID | Requisito | Descripción |
 |----|----|----|
-| RNF1 | Rendimiento | Procesar documentos en menos de 5 minutos |
+| RNF1 | Rendimiento | Procesar documentos en menos de 1 minuto |
 | RNF2 | Escalabilidad | Manejar concurrencia de múltiples solicitudes |
 | RNF3 | Disponibilidad | 99.9% de uptime |
 | RNF4 | Seguridad | Manejo seguro de credenciales y datos |
@@ -342,7 +342,7 @@ flowchart TD
 
 ### 6.1 Herramientas y Tecnologías
 
-* **Runtime:** Node.js 18.x
+* **Runtime:** Node.js 22.x
 * **AWS Services:** Lambda, Textract
 * **APIs Externas:** Google Drive API v3
 * **Base de Datos:** Microsoft SQL Server
@@ -393,7 +393,7 @@ document-processor-lambda/
 
 | Componente | Versión/Requerimiento | Descripción |
 |----|----|----|
-| AWS Lambda | Runtime Node.js 18.x | Entorno de ejecución |
+| AWS Lambda | Runtime Node.js 22.x | Entorno de ejecución |
 | Memoria | 512 MB mínimo | Recursos de Lambda |
 | Timeout | 5 minutos (300 segundos) | Tiempo máximo de ejecución |
 | AWS Textract | Región us-east-1 | Servicio de extracción de texto |
@@ -517,7 +517,7 @@ Los logs están organizados por prefijos:
 **Métricas Importantes**
 | Métrica | Descripción | Umbral |
 |----|----|----|
-| Duración | Tiempo de ejecución | < 300 segundos |
+| Duración | Tiempo de ejecución | < 40 segundos |
 | Errores | Fallos en procesamiento | < 5% |
 | Memoria | Uso de memoria | < 400 MB|
 | Invocaciones | Número de ejecuciones | Monitoreo continuo |
@@ -656,7 +656,7 @@ Recomendaciones:
 Notas Adicionales:
 
 - URL de Producción: Lambda Function URL
-- Contacto de Soporte: camilo_vides@cun.edu.co
+- Contacto de Soporte: Fabrica de software
 - Repositorio: Disponible en control de versiones interno
 
 
