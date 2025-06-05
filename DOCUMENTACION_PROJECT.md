@@ -65,8 +65,8 @@ El sistema está basado en una arquitectura serverless en AWS:
 | **SQL Server** | Almacenamiento de resultados | Microsoft SQL Server |
 | **Diccionarios** | Validación de contenido | Archivos de texto |
 
-### Diagrama de Procesos
-[Google Drive] → [AWS Lambda] → [AWS Textract]
+### Diagrama de Flujo
+
 ```mermaid
 flowchart TD
     A[Recibir Request API] --> B{Validar Body}
@@ -108,7 +108,188 @@ flowchart TD
     Z1 --> W[Cleanup y Response Error]
     Z2 --> W
 ```
+### Diagrama Arquitectura de componentes
 
+```mermaid
+graph TB
+    subgraph "Cliente"
+        CLI[Sistema Cliente/API]
+    end
+    
+    subgraph "AWS Cloud"
+        subgraph "AWS Lambda"
+            MAIN[index.js - Handler Principal]
+            
+            subgraph "Services"
+                AUTH[googleAuth.js]
+                DOWN[downloadDocuments.js]
+                PROC[processDocument.js]
+                TEXT[textract.js]
+                DICT[dictionaryService.js]
+                VALID[validatorDocuments.js]
+                EXTRACT[extractDataDocuments.js]
+                DB[databaseService.js]
+            end
+            
+            subgraph "Utils"
+                TEMP[tempStorage.js]
+                URL[extractUrl.js]
+            end
+            
+            subgraph "Dictionaries"
+                D1[DiccionarioActayDiplomaBachiller.txt]
+                D2[DiccionarioTYT.txt]
+                D3[DiccionarioCUN.txt]
+                D4[Otros Diccionarios...]
+            end
+        end
+        
+        TEXTRACT[AWS Textract Service]
+    end
+    
+    subgraph "External Services"
+        GDRIVE[Google Drive API]
+        SQLSRV[SQL Server Database]
+    end
+    
+    CLI -->|POST Request| MAIN
+    MAIN --> AUTH
+    AUTH --> GDRIVE
+    MAIN --> DOWN
+    DOWN --> GDRIVE
+    MAIN --> PROC
+    PROC --> TEXT
+    TEXT --> TEXTRACT
+    PROC --> DICT
+    DICT --> D1
+    DICT --> D2
+    DICT --> D3
+    DICT --> D4
+    PROC --> VALID
+    PROC --> EXTRACT
+    MAIN --> DB
+    DB --> SQLSRV
+    MAIN --> TEMP
+    MAIN --> URL
+
+```
+### Digrama de secuencia detallado
+```mermaid
+sequenceDiagram
+    participant Client as Cliente/API
+    participant Lambda as AWS Lambda
+    participant Auth as Google Auth
+    participant Drive as Google Drive
+    participant Textract as AWS Textract
+    participant Dict as Dictionary Service
+    participant DB as SQL Server
+    
+    Client->>Lambda: POST /process-documents
+    Lambda->>Lambda: Validar Request Body
+    Lambda->>Lambda: Extraer URLs de documentos
+    
+    loop Para cada documento
+        Lambda->>Auth: Obtener credenciales Google
+        Auth-->>Lambda: Access Token
+        Lambda->>Drive: Descargar documento
+        Drive-->>Lambda: Archivo descargado
+        Lambda->>Textract: Extraer texto del documento
+        Textract-->>Lambda: Texto extraído
+        Lambda->>Dict: Cargar diccionario por tipo
+        Dict-->>Lambda: Lista de palabras clave
+        Lambda->>Lambda: Validar texto con diccionario
+        
+        alt Es Prueba TyT
+            Lambda->>Lambda: Extraer datos específicos (EK, fechas, etc.)
+            Lambda->>Lambda: Validar datos extraídos
+        end
+    end
+    
+    Lambda->>Lambda: Construir objeto respuesta
+    Lambda->>DB: Insertar resultados
+    DB-->>Lambda: Confirmación
+    Lambda->>Lambda: Limpiar archivos temporales
+    Lambda-->>Client: Response con resultados
+```
+
+### Diagrama de flujo de Validacion de Documentos
+```mermaid
+flowchart TD
+    A[Documento Descargado] --> B[Extraer Texto con Textract]
+    B --> C{Texto Extraído?}
+    C -->|No| D[Marcar: Revisión Manual]
+    C -->|Sí| E[Determinar Tipo de Documento]
+    
+    E --> F[Cargar Diccionario Correspondiente]
+    F --> G[Contar Coincidencias]
+    G --> H{≥ 2 Coincidencias?}
+    
+    H -->|No| D
+    H -->|Sí| I{Es Prueba TyT?}
+    
+    I -->|No| J[Marcar: Documento Válido]
+    I -->|Sí| K[Extraer Código EK]
+    
+    K --> L[Extraer Número Documento]
+    L --> M[Extraer Institución]
+    M --> N[Extraer Programa]
+    N --> O[Extraer Fecha]
+    
+    O --> P{Número Doc = Input?}
+    P -->|Sí| Q[Doc Válido: Sí]
+    P -->|No| R[Doc Válido: Revisión]
+    
+    Q --> S[Validar con Dict CUN]
+    R --> S
+    S --> T{Institución CUN?}
+    
+    T -->|Sí| U[Inst Válida: Sí]
+    T -->|No| V[Inst Válida: Revisión]
+    
+    U --> W[Marcar: Documento Válido]
+    V --> W
+    W --> X[Continuar con siguiente documento]
+    J --> X
+    D --> X
+```
+
+### Diagrama de Manejo de errores
+```mermaid
+flowchart TD
+    A[Inicio del Proceso] --> B{Error en Request?}
+    B -->|Sí| C[Log Error + Return 400]
+    B -->|No| D[Procesar Documentos]
+    
+    D --> E{Error en Auth Google?}
+    E -->|Sí| F[Log Auth Error + Return 500]
+    E -->|No| G[Descargar Documentos]
+    
+    G --> H{Error en Descarga?}
+    H -->|Sí| I[Log + Marcar Revisión Manual]
+    H -->|No| J[Extraer Texto]
+    
+    J --> K{Error en Textract?}
+    K -->|Sí| L[Log + Marcar Revisión Manual]
+    K -->|No| M[Validar Documentos]
+    
+    M --> N{Error en Validación?}
+    N -->|Sí| O[Log + Marcar Revisión Manual]
+    N -->|No| P[Insertar en DB]
+    
+    P --> Q{Error en DB?}
+    Q -->|Sí| R[Log DB Error + Return 500]
+    Q -->|No| S[Cleanup + Return 200]
+    
+    I --> P
+    L --> P
+    O --> P
+    
+    C --> T[Cleanup Resources]
+    F --> T
+    R --> T
+    S --> U[Fin del Proceso]
+    T --> U
+```
 ---
 
 ## 4. Requisitos del Sistema
