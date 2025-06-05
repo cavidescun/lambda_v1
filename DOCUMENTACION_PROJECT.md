@@ -194,32 +194,40 @@ SQLSERVER_PASSWORD=password_db
 SQLSERVER_HOST=servidor.database.windows.net
 SQLSERVER_DATABASE=nombre_db
 SQLSERVER_PORT=1433
-7.3 Procedimiento de Despliegue
+```
 
-Preparación del Código:
-bash# Construir el paquete de despliegue
+### 7.3 Procedimiento de Despliegue
+
+1. Preparación del Código:
+
+```bash
+# Construir el paquete de despliegue
 npm run build
-
-Configuración de AWS Lambda:
-bash# Crear función Lambda
+```
+2. Configuración de AWS Lambda:
+```bash
+# Crear función Lambda
 aws lambda create-function \
   --function-name document-processor \
   --runtime nodejs18.x \
   --role arn:aws:iam::account:role/lambda-execution-role \
   --handler src/index.handler \
   --zip-file fileb://lambda-deployment-prod.zip
-
-Configurar Variables de Entorno:
-bash# Configurar variables
+```
+3. Configurar Variables de Entorno:
+```bash
+# Configurar variables
 aws lambda update-function-configuration \
   --function-name document-processor \
   --environment Variables='{
     "GOOGLE_CLIENT_ID":"tu_client_id",
     "GOOGLE_CLIENT_SECRET":"tu_client_secret"
   }'
+```
 
-Configurar Permisos IAM:
-json{
+4. Configurar Permisos IAM:
+```json
+{
   "Version": "2012-10-17",
   "Statement": [
     {
@@ -232,17 +240,20 @@ json{
     }
   ]
 }
+```
 
-Pruebas de Despliegue:
-bash# Probar función
+5. Pruebas de Despliegue:
+```bash
+# Probar función
 aws lambda invoke \
   --function-name document-processor \
   --payload file://test-event.json \
   response.json
 
-
+```
 
 ## 8. Pruebas
+
 ### 8.1 Estrategia de Pruebas
 
 - Pruebas Unitarias: Validación de cada servicio individual
@@ -251,39 +262,64 @@ aws lambda invoke \
 - Pruebas de Validación: Verificar precisión de extracción de datos
 
 ### 8.2 Plan de Pruebas
-Tipo de PruebaObjetivoHerramientaFuncionalesVerificar procesamiento correctoPostman, curlRendimientoEvaluar tiempos de respuestaAWS CloudWatchValidaciónComprobar precisión de extracciónCasos de prueba manualesSeguridadVerificar manejo de credencialesAWS IAM Analyzer
+| Tipo de Prueba | Objetivo | Herramienta |
+|----|----|----|
+| Funcionales | Verificar procesamiento correcto | Postman, curl |
+| Rendimiento | Evaluar tiempos de respuesta | AWS CloudWatch |
+| Validación | Comprobar precisión de extracción | Casos de prueba manuales |
+| Seguridad | Verificar manejo de credenciales AWS | IAM Analyzer |
+
 ### 8.3 Casos de Prueba Críticos
-CasoDescripciónResultado EsperadoTC001Procesar cédula válida"Documento Valido"TC002Procesar prueba TyTExtraer código EK correctamenteTC003Documento inválido"Revision Manual"TC004URL de Google Drive incorrectaError controlado
+| Caso | Descripción | Resultado Esperado |
+|----|----|----|
+| TC001 | Procesar cédula válida | "Documento Valido" |
+| TC002 | Procesar prueba TyT | Extraer código EK correctamente |
+| TC003 | Documento inválido | "Revision Manual" |
+| TC004 | URL de Google Drive incorrecta | Error controlado |
 
 ## 9. Mantenimiento
+
 ### 9.1 Estrategia de Mantenimiento
 
-Mantenimiento Correctivo: Corrección de errores en validaciones
-Mantenimiento Preventivo: Actualización de diccionarios y credenciales
-Mantenimiento Evolutivo: Nuevos tipos de documentos y validaciones
+- Mantenimiento Correctivo: Corrección de errores en validaciones
+- Mantenimiento Preventivo: Actualización de diccionarios y credenciales
+- Mantenimiento Evolutivo: Nuevos tipos de documentos y validaciones
 
 ### 9.2 Monitoreo y Logs
-CloudWatch Logs
+**CloudWatch Logs**
 Los logs están organizados por prefijos:
 
-[MAIN] - Flujo principal de ejecución
-[DOWNLOAD] - Descarga de archivos desde Google Drive
-[TEXTRACT] - Extracción de texto con AWS Textract
-[PROCESS] - Procesamiento de documentos
-[DICT] - Validación con diccionarios
-[DB] - Operaciones de base de datos
+- [MAIN] - Flujo principal de ejecución
+- [DOWNLOAD] - Descarga de archivos desde Google Drive
+- [TEXTRACT] - Extracción de texto con AWS Textract
+- [PROCESS] - Procesamiento de documentos
+- [DICT] - Validación con diccionarios
+- [DB] - Operaciones de base de datos
 
-Métricas Importantes
-MétricaDescripciónUmbralDuraciónTiempo de ejecución< 300 segundosErroresFallos en procesamiento< 5%MemoriaUso de memoria< 400 MBInvocacionesNúmero de ejecucionesMonitoreo continuo
-9.3 Registro de Cambios (Changelog)
-VersiónFechaDescripciónResponsable1.0.001/06/2025Versión inicial de lanzamientoEquipo Desarrollo1.0.115/06/2025Correcciones en extracción de datos TyTCamilo Vides1.1.001/07/2025Nuevos tipos de documentos soportadosEquipo Desarrollo
+**Métricas Importantes**
+| Métrica | Descripción | Umbral |
+|----|----|----|
+| Duración | Tiempo de ejecución | < 300 segundos |
+| Errores | Fallos en procesamiento | < 5% |
+| Memoria | Uso de memoria | < 400 MB|
+| Invocaciones | Número de ejecuciones | Monitoreo continuo |
+
+### 9.3 Registro de Cambios (Changelog)
+| Versión | Fecha | Descripción | Responsable |
+|----|----|----|----|
+|1.0.0 | 01/06/2025 | Versión inicial de lanzamiento | Camilo Vides |
+
 
 ## 10. API Reference
+
 ### 10.1 Endpoint Principal
+```
 POST /process-documents
 Content-Type: application/json
-10.2 Request Body
-json{
+```
+### 10.2 Request Body
+```json
+{
   "ID": "EST-2025-001",
   "Nombre_completo": "Juan Pérez González",
   "Numero_de_Documento": "1234567890",
@@ -297,8 +333,12 @@ json{
   "Copia_de_cedula": "https://drive.google.com/file/d/abc123/view",
   "Prueba_T_T": "https://drive.google.com/file/d/def456/view"
 }
-10.3 Response Body
-json{
+
+```
+
+### 10.3 Response Body
+```json
+{
   "ID": "EST-2025-001",
   "NombreCompleto": "Juan Pérez González",
   "TipoDocumento": "CC",
@@ -313,47 +353,58 @@ json{
   "Institucion_Valida": "Valido",
   "Num_Doc_Valido": "Valido"
 }
-
+```
 ## 11. Solución de Problemas
+
 ### 11.1 Errores Comunes
-ErrorCausaSoluciónPERMISSION_DENIEDSin permisos en Google DriveVerificar compartido del archivoNO_TEXT_EXTRACTEDTextract no extrajo textoVerificar calidad del documentoAUTH_DOWNLOAD_ERRORCredenciales Google inválidasRegenerar refresh tokenDB_CONNECTION_ERRORFallo en SQL ServerVerificar credenciales y conectividad
-11.2 Validación de Documentos
-Estados de Validación
-EstadoDescripción"Documento Valido"Pasó todas las validaciones"Revision Manual"Requiere verificación humana"N/A"No aplica para este nivel"Documento no adjunto"No se proporcionó URL
+| Error | Causa | Solución |
+|----|----|----|
+| PERMISSION_DENIEDS | in permisos en Google Drive | Verificar compartido del archivo |
+| NO_TEXT_EXTRACTED | Textract no extrajo texto | Verificar calidad del documento |
+| AUTH_DOWNLOAD_ERROR | Credenciales Google inválidas | Regenerar refresh token |
+| DB_CONNECTION_ERROR | Fallo en SQL Server | Verificar credenciales y conectividad |
+
+### 11.2 Validación de Documentos
+**Estados de Validación**
+| Estado | Descripción |
+|----|----|
+| "Documento Valido"| Pasó todas las validaciones | 
+| "Revision Manual" | Requiere verificación humana |
+| "N/A" | No aplica para este nivel | 
+| "Documento no adjunto" | No se proporcionó URL |
 
 ## 12. Seguridad
 ### 12.1 Manejo de Credenciales
 
-Variables de entorno para credenciales sensibles
-Rotación periódica de tokens de Google
-Cifrado en tránsito y en reposo
-Principio de menor privilegio en IAM
+- Variables de entorno para credenciales sensibles
+- Rotación periódica de tokens de Google
+- Cifrado en tránsito y en reposo
+- Principio de menor privilegio en IAM
 
 ### 12.2 Validación de Entrada
 
-Sanitización de URLs de Google Drive
-Validación de tipos de archivo
-Límites de tamaño de documento (10MB)
-Control de timeout en operaciones
+- Sanitización de URLs de Google Drive
+- Validación de tipos de archivo
+- Límites de tamaño de documento (10MB)
+- Control de timeout en operaciones
 
 
 ## 13. Conclusiones
 Esta documentación proporciona una visión completa del sistema de procesamiento de documentos académicos. El sistema automatiza eficientemente la validación de documentos educativos, reduciendo significativamente el tiempo de procesamiento y mejorando la precisión de las validaciones.
 Recomendaciones:
 
-Mantener actualizados los diccionarios de validación
-Monitorear regularmente las métricas de CloudWatch
-Realizar pruebas periódicas con diferentes tipos de documentos
-Documentar cualquier nuevo tipo de documento que se agregue
+- Mantener actualizados los diccionarios de validación
+- Monitorear regularmente las métricas de CloudWatch
+- Realizar pruebas periódicas con diferentes tipos de documentos
+- Documentar cualquier nuevo tipo de documento que se agregue
 
 
 Notas Adicionales:
 
-URL de Producción: Lambda Function URL
-Contacto de Soporte: camilo_vides@cun.edu.co
-Repositorio: Disponible en control de versiones interno
+- URL de Producción: Lambda Function URL
+- Contacto de Soporte: camilo_vides@cun.edu.co
+- Repositorio: Disponible en control de versiones interno
 
 
 Versión: 1.0.0
 Última actualización: Junio 2025
-Próxima revisión: Diciembre 2025
