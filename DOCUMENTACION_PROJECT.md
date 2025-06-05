@@ -1,10 +1,4 @@
-# 📄 Documentación Sistema de Procesamiento de Documentos Académicos AWS Lambda
-
-A continuación se presenta la documentación completa para el sistema de procesamiento y validación de documentos académicos desplegado en AWS Lambda, que integra Google Drive API y AWS Textract para automatizar la validación de documentos educativos.
-
----
-
-## **Sistema de Procesamiento de Documentos Académicos**
+## **Sistema de Procesamiento de Documentos Académicos para Grados**
 
 ---
 
@@ -17,9 +11,13 @@ A continuación se presenta la documentación completa para el sistema de proces
 
 ## 1. Introducción
 
-**Propósito:** Este documento describe la arquitectura, implementación, despliegue y mantenimiento del Sistema de Procesamiento de Documentos Académicos, facilitando la validación automática de documentos para procesos de graduación en instituciones educativas.
+Esta documentación técnica presenta de manera integral el Sistema de Procesamiento de Documentos Académicos, una solución innovadora que automatiza la validación de documentos educativos. El documento está estructurado siguiendo las mejores prácticas de documentación de software, abarcando desde la conceptualización hasta la implementación práctica del sistema.
 
-**Alcance:** El sistema permite la descarga automática de documentos desde Google Drive, extracción de texto mediante AWS Textract, validación mediante diccionarios especializados y almacenamiento de resultados en SQL Server.
+### 1.1 Propósito
+Este documento describe la arquitectura, implementación, despliegue y mantenimiento del Sistema de Procesamiento de Documentos Académicos para grados, facilitando la validación automática de documentos para procesos de graduación en instituciones educativas.
+
+### 1.2 Alcance
+El sistema permite la descarga automática de documentos desde Google Drive, extracción de texto mediante AWS Textract, validación mediante diccionarios especializados y almacenamiento de resultados en SQL Server.
 
 ---
 
@@ -43,7 +41,6 @@ A continuación se presenta la documentación completa para el sistema de proces
 
 * Administradores académicos
 * Personal de registro y control
-* Estudiantes (usuarios finales)
 * Auditores y supervisores
 
 ### 2.4 Funcionalidades Principales:
@@ -52,7 +49,7 @@ A continuación se presenta la documentación completa para el sistema de proces
 - [x] Extracción de texto con AWS Textract
 - [x] Validación con diccionarios especializados
 - [x] Almacenamiento en base de datos
-- [x] Extracción de datos específicos (Pruebas TyT)
+- [x] Extracción de datos específicos
 
 ---
 
@@ -62,18 +59,55 @@ El sistema está basado en una arquitectura serverless en AWS:
 
 | Componente | Descripción | Tecnología |
 |----|----|----|
-| **AWS Lambda** | Función principal de procesamiento | Node.js 18.x |
+| **AWS Lambda** | Función principal de procesamiento | Node.js 22.x |
 | **AWS Textract** | Extracción de texto de documentos | AWS AI Service |
 | **Google Drive API** | Descarga de documentos | Google APIs |
 | **SQL Server** | Almacenamiento de resultados | Microsoft SQL Server |
 | **Diccionarios** | Validación de contenido | Archivos de texto |
 
-### Diagrama de Arquitectura
+### Diagrama de Procesos
 [Google Drive] → [AWS Lambda] → [AWS Textract]
-↑              ↓              ↓
-[Usuario/API] ← [SQL Server] ← [Validación]
-↑
-[Diccionarios]
+```mermaid
+flowchart TD
+    A[Recibir Request API] --> B{Validar Body}
+    B -->|Válido| C[Extraer URLs de Documentos]
+    B -->|Inválido| Z1[Error 400]
+    
+    C --> D[Autenticar Google Drive]
+    D -->|Success| E[Descargar Documentos]
+    D -->|Error| Z2[Error Auth Google]
+    
+    E --> F[Crear Directorio Temporal]
+    F --> G[Procesar cada Documento]
+    
+    G --> H[Extraer Texto con Textract]
+    H -->|Success| I[Cargar Diccionario]
+    H -->|Error| J[Marcar como Revisión Manual]
+    
+    I --> K[Validar con Diccionario]
+    K -->|Válido| L{Es Prueba TyT?}
+    K -->|Inválido| J
+    
+    L -->|Sí| M[Extraer Datos Específicos]
+    L -->|No| N[Marcar como Documento Válido]
+    
+    M --> O[Validar Datos Extraídos]
+    O --> P[Validar Institución CUN]
+    P --> N
+    
+    N --> Q[Construir Response Object]
+    J --> Q
+    
+    Q --> R[Insertar en Base de Datos]
+    R -->|Success| S[Limpiar Archivos Temporales]
+    R -->|Error| T[Log Error DB]
+    
+    S --> U[Retornar Response 200]
+    T --> V[Retornar Response 500]
+    
+    Z1 --> W[Cleanup y Response Error]
+    Z2 --> W
+```
 
 ---
 
@@ -134,6 +168,8 @@ El sistema está basado en una arquitectura serverless en AWS:
 * **Librerías:** mssql, googleapis, aws-sdk, fs-extra
 
 ### 6.2 Estructura del Código
+
+```
 document-processor-lambda/
 ├── src/
 │   ├── index.js                     # Handler principal
@@ -153,6 +189,7 @@ document-processor-lambda/
 ├── build-lambda.js                 # Script de construcción
 ├── package.json
 └── README.md
+```
 
 ### 6.3 Tipos de Documentos Soportados
 
