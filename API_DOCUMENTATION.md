@@ -289,7 +289,7 @@ Para documentos de tipo `prueba_tt`, se extraen automáticamente:
 ### cURL
 
 ```bash
-curl -X POST https://api-gateway-url.amazonaws.com/prod/process-documents \
+curl -X POST https://64npbyhrg3eodw5zh7ofxtu5yq0udymm.lambda-url.us-east-1.on.aws/ \
   -H "Content-Type: application/json" \
   -d '{
     "ID": "EST-2024-001",
@@ -298,6 +298,7 @@ curl -X POST https://api-gateway-url.amazonaws.com/prod/process-documents \
     "Tipo_de_documento": "CC",
     "Copia_de_cedula": "https://drive.google.com/file/d/1Abc2Def3Ghi4/view",
     "Prueba_T_T": "https://drive.google.com/file/d/3Cde4Fgh5Ijk6/view"
+    ...
   }'
 ```
 
@@ -306,7 +307,7 @@ curl -X POST https://api-gateway-url.amazonaws.com/prod/process-documents \
 ```javascript
 const processDocuments = async (data) => {
   try {
-    const response = await fetch('https://api-gateway-url.amazonaws.com/prod/process-documents', {
+    const response = await fetch('https://64npbyhrg3eodw5zh7ofxtu5yq0udymm.lambda-url.us-east-1.on.aws/', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
