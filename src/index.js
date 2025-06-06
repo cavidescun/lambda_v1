@@ -2,7 +2,7 @@ const { extractDocumentUrls } = require("./services/extractUrl");
 const { downloadDocuments } = require("./services/downloadDocuments");
 const { cleanupTempFiles } = require("./utils/tempStorage");
 const { processDocuments } = require("./services/processDocument");
-const { insertDBData } = require("./services/databaseService");
+// const { insertDBData } = require("./services/databaseService");
 
 exports.handler = async (event, context) => {
   try {
@@ -25,13 +25,13 @@ exports.handler = async (event, context) => {
       downloadedFiles,
       documentsUrl
     );
-    const insertDBResult = await insertDBData(result);
+    // const insertDBResult = await insertDBData(result);
 
-    if (insertDBResult.success) {
+    // if (insertDBResult.success) {
       return formatResponse(200, result);
-    } else {
-      return formatResponse(400, result);
-    }
+    // } else {
+    //   return formatResponse(400, result);
+    // }
   } catch (error) {
     console.error("[MAIN] Error:", error.message);
     console.error("[MAIN] Stack:", error.stack);
