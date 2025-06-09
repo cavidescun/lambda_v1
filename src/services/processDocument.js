@@ -1,13 +1,9 @@
-// src/services/processDocument.js - Actualizado para usar analyzeDocument
-
-const { getDictionaryForDocumentType } = require('./dictionaryService')
+const { getDictionaryForDocumentType } = require('./dictionaryService');
 const { validateTextWithDictionary} = require('./validatorDocuments');
-const { extractTextWithDocumentType } = require('./textract') // Importar función actualizada
-const { extractDataTyT } = require('./extractDataDocuments')
+const { extractTextWithDocumentType } = require('./textract');
+const { extractDataTyT } = require('./extractDataDocuments');
 
 async function processDocuments(inputData, downloadedFiles, documentUrls) {
-  console.log('[PROCESS] Iniciando procesamiento de documentos con analyzeDocument');
-  
   const output = {
     ID: inputData.ID,
     NombreCompleto: inputData.Nombre_completo || '',
@@ -38,7 +34,6 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     Num_Doc_Valido: inputData.Nivel_de_formación_del_cuál_está_solicitando_grado === 'Especialización' ? 'N/A' : 'Revision Manual',
   };
 
-  // Mapear archivos descargados con sus tipos
   const documentMap = {};
   for (const file of downloadedFiles) {
     for (const [docType, url] of Object.entries(documentUrls)) {
@@ -49,7 +44,6 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     }
   }
 
-  // Procesar cada tipo de documento con su tipo específico
   await processDocumentType(documentMap, 'cedula', output, 'FotocopiaDocumento', inputData);
   await processDocumentType(documentMap, 'diploma_bachiller', output, 'DiplomayActaGradoBachiller', inputData);
   await processDocumentType(documentMap, 'diploma_tecnico', output, 'DiplomayActaGradoTecnico', inputData);
@@ -60,7 +54,6 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
   await processDocumentType(documentMap, 'recibo_pago', output, 'RecibiDePagoDerechosDeGrado', inputData);
   await processDocumentType(documentMap, 'encuesta_m0', output, 'Encuesta_M0', inputData);
   await processDocumentType(documentMap, 'acta_homologacion', output, 'Acta_Homologacion', inputData);
-  
   console.log('[PROCESS] Procesamiento completado');
   return output;
 }
@@ -78,12 +71,10 @@ async function processDocumentType(documentMap, docType, output, outputField, in
 
     console.log(`[PROCESS] Archivo encontrado: ${file.fileName} (${formatBytes(file.size)})`);
 
-    // Usar extractTextWithDocumentType para aprovechar analyzeDocument
     const extractedText = await extractTextWithDocumentType(file.path, docType);
     
     console.log(`[PROCESS] Texto extraído para ${docType}: ${extractedText.length} caracteres`);
-    
-    // Obtener diccionario y validar
+
     const dictionary = await getDictionaryForDocumentType(docType);
     const isValid = await validateTextWithDictionary(extractedText, dictionary);
 
@@ -166,9 +157,6 @@ async function processDocumentType(documentMap, docType, output, outputField, in
   }
 }
 
-/**
- * Formatea bytes a formato legible
- */
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;

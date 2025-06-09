@@ -65,7 +65,6 @@ async function createPackage() {
       "fs-extra": "^11.2.0",
       "glob": "^10.3.0",
       "googleapis": "^128.0.0",
-      "mssql": "^11.0.1",
       "readline": "^1.3.0",
     },
   };

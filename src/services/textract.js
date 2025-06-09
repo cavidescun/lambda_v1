@@ -1,5 +1,3 @@
-// src/services/textract.js - Versión mejorada con analyzeDocument
-
 const AWS = require("aws-sdk");
 const fs = require("fs-extra");
 
@@ -10,7 +8,6 @@ const textract = new AWS.Textract({
   },
 });
 
-// Configuración de features por tipo de documento
 const DOCUMENT_FEATURES = {
   cedula: ['FORMS', 'SIGNATURES'],
   diploma_bachiller: ['FORMS', 'TABLES'],
@@ -24,25 +21,20 @@ const DOCUMENT_FEATURES = {
   acta_homologacion: ['FORMS', 'TABLES']
 };
 
-// Límites de tamaño para diferentes métodos
 const SIZE_LIMITS = {
-  SYNC_BYTES: 5 * 1024 * 1024, // 5MB
-  ASYNC_BYTES: 500 * 1024 * 1024 // 500MB
+  SYNC_BYTES: 5 * 1024 * 1024,
+  ASYNC_BYTES: 500 * 1024 * 1024
 };
 
-/**
- * Extrae texto de documento usando el método más apropiado
- */
+
 async function extractTextFromDocument(filePath, documentType = null) {
   try {
     console.log(`[TEXTRACT] Iniciando extracción para: ${filePath}`);
     
     const documentBuffer = await fs.readFile(filePath);
-    
-    // Validaciones básicas
+
     await validateDocument(documentBuffer, filePath);
-    
-    // Determinar método basado en tamaño y tipo
+
     const useAnalyze = shouldUseAnalyzeDocument(documentBuffer.length, documentType);
     
     let result;
@@ -60,19 +52,15 @@ async function extractTextFromDocument(filePath, documentType = null) {
   }
 }
 
-/**
- * Valida el documento antes del procesamiento
- */
+
 async function validateDocument(documentBuffer, filePath) {
-  // Verificar que no sea HTML
   const headerCheck = documentBuffer.slice(0, 20).toString();
   if (headerCheck.startsWith("<!DOCTYPE") || 
       headerCheck.startsWith("<html") || 
       headerCheck.startsWith("<!do")) {
     throw new Error("HTML_FILE_DETECTED");
   }
-  
-  // Verificar tamaño mínimo
+
   if (documentBuffer.length < 100) {
     throw new Error("DOCUMENT_TOO_SMALL");
   }
@@ -113,20 +101,15 @@ function detectFileType(buffer) {
   return 'UNKNOWN';
 }
 
-/**
- * Determina si usar analyzeDocument basado en tamaño y tipo
- */
 function shouldUseAnalyzeDocument(fileSize, documentType) {
-  // Usar analyzeDocument para documentos estructurados
+
   const structuredDocuments = ['diploma_bachiller', 'diploma_tecnico', 'diploma_tecnologo', 
                               'titulo_profesional', 'prueba_tt', 'icfes', 'recibo_pago'];
-  
-  // Si es un documento estructurado, usar analyzeDocument
+
   if (documentType && structuredDocuments.includes(documentType)) {
     return true;
   }
-  
-  // Para documentos pequeños, usar detectDocument (más rápido)
+
   if (fileSize < 1024 * 1024) { // 1MB
     return false;
   }
@@ -134,9 +117,6 @@ function shouldUseAnalyzeDocument(fileSize, documentType) {
   return true;
 }
 
-/**
- * Extrae texto usando analyzeDocument (método avanzado)
- */
 async function extractWithAnalyzeDocument(documentBuffer, documentType) {
   try {
     console.log(`[TEXTRACT] Usando analyzeDocument para tipo: ${documentType}`);
@@ -149,16 +129,14 @@ async function extractWithAnalyzeDocument(documentBuffer, documentType) {
       },
       FeatureTypes: features
     };
-    
-    // Determinar si usar método síncrono o asíncrono
+
     let result;
     if (documentBuffer.length <= SIZE_LIMITS.SYNC_BYTES) {
       result = await textract.analyzeDocument(params).promise();
     } else {
       result = await analyzeDocumentAsync(documentBuffer, features);
     }
-    
-    // Procesar resultado según el tipo de documento
+
     return processAnalyzeResult(result, documentType);
     
   } catch (error) {
@@ -167,9 +145,6 @@ async function extractWithAnalyzeDocument(documentBuffer, documentType) {
   }
 }
 
-/**
- * Obtiene las características a extraer según el tipo de documento
- */
 function getFeatureTypesForDocument(documentType) {
   if (!documentType || !DOCUMENT_FEATURES[documentType]) {
     return ['FORMS']; // Default
@@ -177,9 +152,6 @@ function getFeatureTypesForDocument(documentType) {
   return DOCUMENT_FEATURES[documentType];
 }
 
-/**
- * Procesa el resultado de analyzeDocument de forma inteligente
- */
 function processAnalyzeResult(result, documentType) {
   const extractedData = {
     text: '',
@@ -232,8 +204,7 @@ function processAnalyzeResult(result, documentType) {
         break;
     }
   });
-  
-  // Calcular confianza promedio
+
   extractedData.confidence = confidenceCount > 0 ? confidenceSum / confidenceCount : 0;
   extractedData.text = extractedData.text.trim();
   
@@ -242,20 +213,14 @@ function processAnalyzeResult(result, documentType) {
   }
   
   console.log(`[TEXTRACT] Extracción completada - Confianza: ${extractedData.confidence.toFixed(2)}%`);
-  
-  // Para compatibilidad con el código existente, devolver solo el texto
-  // Pero guardamos los datos estructurados para futuras mejoras
+
   return extractedData.text;
 }
 
-/**
- * Procesa pares clave-valor de formularios
- */
 function processKeyValuePair(keyBlock, allBlocks) {
   const keyText = getBlockText(keyBlock, allBlocks);
   let valueText = '';
-  
-  // Buscar el valor asociado
+
   if (keyBlock.Relationships) {
     const valueRelation = keyBlock.Relationships.find(rel => rel.Type === 'VALUE');
     if (valueRelation && valueRelation.Ids) {
@@ -274,9 +239,7 @@ function processKeyValuePair(keyBlock, allBlocks) {
   };
 }
 
-/**
- * Procesa tablas extraídas
- */
+
 function processTable(tableBlock, allBlocks) {
   const table = {
     rows: [],
@@ -289,8 +252,7 @@ function processTable(tableBlock, allBlocks) {
       const cells = cellRelation.Ids.map(id => 
         allBlocks.find(block => block.Id === id && block.BlockType === 'CELL')
       ).filter(Boolean);
-      
-      // Organizar celdas por fila y columna
+
       const cellMatrix = {};
       cells.forEach(cell => {
         const row = cell.RowIndex || 1;
@@ -299,8 +261,7 @@ function processTable(tableBlock, allBlocks) {
         if (!cellMatrix[row]) cellMatrix[row] = {};
         cellMatrix[row][col] = getBlockText(cell, allBlocks);
       });
-      
-      // Convertir matriz a array de filas
+
       Object.keys(cellMatrix).sort((a, b) => parseInt(a) - parseInt(b)).forEach(rowNum => {
         const row = cellMatrix[rowNum];
         const rowData = [];
@@ -315,9 +276,7 @@ function processTable(tableBlock, allBlocks) {
   return table;
 }
 
-/**
- * Obtiene el texto de un bloque y sus hijos
- */
+
 function getBlockText(block, allBlocks) {
   let text = block.Text || '';
   
@@ -338,21 +297,16 @@ function getBlockText(block, allBlocks) {
   return text;
 }
 
-/**
- * Análisis asíncrono para documentos grandes
- */
+
 async function analyzeDocumentAsync(documentBuffer, features) {
-  // Para documentos muy grandes, usar S3 + análisis asíncrono
-  // Por ahora, usar método síncrono con timeout extendido
-  
+
   const params = {
     Document: {
       Bytes: documentBuffer,
     },
     FeatureTypes: features
   };
-  
-  // Aumentar timeout para documentos grandes
+
   const extendedTextract = new AWS.Textract({
     httpOptions: {
       timeout: 120000, // 2 minutos
@@ -363,9 +317,6 @@ async function analyzeDocumentAsync(documentBuffer, features) {
   return await extendedTextract.analyzeDocument(params).promise();
 }
 
-/**
- * Extrae texto usando detectDocumentText (método básico)
- */
 async function extractWithDetectDocument(documentBuffer) {
   console.log(`[TEXTRACT] Usando detectDocumentText (método básico)`);
   
@@ -404,9 +355,7 @@ async function extractWithDetectDocument(documentBuffer) {
   return trimmedText;
 }
 
-/**
- * Formatea bytes a formato legible
- */
+
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -415,9 +364,6 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-/**
- * Función auxiliar para extraer texto con información de tipo de documento
- */
 async function extractTextWithDocumentType(filePath, documentType) {
   return await extractTextFromDocument(filePath, documentType);
 }

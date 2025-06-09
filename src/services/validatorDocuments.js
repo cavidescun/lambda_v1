@@ -1,4 +1,4 @@
-async function validateTextWithDictionary(text, dictionary, minMatches = 2) {
+async function validateTextWithDictionary(text, dictionary, minMatches = 1) {
   if (!text || !dictionary || dictionary.length === 0) {
     return false;
   }
