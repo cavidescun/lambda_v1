@@ -1,9 +1,13 @@
+// src/services/processDocument.js - Actualizado para usar analyzeDocument
+
 const { getDictionaryForDocumentType } = require('./dictionaryService')
 const { validateTextWithDictionary} = require('./validatorDocuments');
-const { extractTextFromDocument } = require('./textract')
+const { extractTextWithDocumentType } = require('./textract') // Importar función actualizada
 const { extractDataTyT } = require('./extractDataDocuments')
 
 async function processDocuments(inputData, downloadedFiles, documentUrls) {
+  console.log('[PROCESS] Iniciando procesamiento de documentos con analyzeDocument');
+  
   const output = {
     ID: inputData.ID,
     NombreCompleto: inputData.Nombre_completo || '',
@@ -34,6 +38,7 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     Num_Doc_Valido: inputData.Nivel_de_formación_del_cuál_está_solicitando_grado === 'Especialización' ? 'N/A' : 'Revision Manual',
   };
 
+  // Mapear archivos descargados con sus tipos
   const documentMap = {};
   for (const file of downloadedFiles) {
     for (const [docType, url] of Object.entries(documentUrls)) {
@@ -44,6 +49,7 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     }
   }
 
+  // Procesar cada tipo de documento con su tipo específico
   await processDocumentType(documentMap, 'cedula', output, 'FotocopiaDocumento', inputData);
   await processDocumentType(documentMap, 'diploma_bachiller', output, 'DiplomayActaGradoBachiller', inputData);
   await processDocumentType(documentMap, 'diploma_tecnico', output, 'DiplomayActaGradoTecnico', inputData);
@@ -55,11 +61,14 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
   await processDocumentType(documentMap, 'encuesta_m0', output, 'Encuesta_M0', inputData);
   await processDocumentType(documentMap, 'acta_homologacion', output, 'Acta_Homologacion', inputData);
   
+  console.log('[PROCESS] Procesamiento completado');
   return output;
 }
 
 async function processDocumentType(documentMap, docType, output, outputField, inputData){
   try {
+    console.log(`[PROCESS] Procesando documento tipo: ${docType}`);
+    
     const file = documentMap[docType];
     if (!file) {
       console.log(`[PROCESS] No se encontró archivo para tipo: ${docType}`);
@@ -67,41 +76,105 @@ async function processDocumentType(documentMap, docType, output, outputField, in
       return;
     }
 
-    const extractedText = await extractTextFromDocument(file.path);
+    console.log(`[PROCESS] Archivo encontrado: ${file.fileName} (${formatBytes(file.size)})`);
+
+    // Usar extractTextWithDocumentType para aprovechar analyzeDocument
+    const extractedText = await extractTextWithDocumentType(file.path, docType);
+    
+    console.log(`[PROCESS] Texto extraído para ${docType}: ${extractedText.length} caracteres`);
+    
+    // Obtener diccionario y validar
     const dictionary = await getDictionaryForDocumentType(docType);
     const isValid = await validateTextWithDictionary(extractedText, dictionary);
 
+    console.log(`[PROCESS] Validación ${docType}: ${isValid ? 'VÁLIDO' : 'INVÁLIDO'}`);
+
     if (isValid) {
+      // Procesamiento especial para pruebas TyT
       if (docType === 'prueba_tt') {
+        console.log(`[PROCESS] Extrayendo datos específicos de TyT`);
+        
         const dataTyT = await extractDataTyT(extractedText);
+        
+        // Asignar datos extraídos
         output.EK = dataTyT.registroEK;
         output.Num_Documento_Extraido = dataTyT.numDocumento;
         output.Fecha_Presentacion_Extraida = dataTyT.fechaPresentacion;
         output.Programa_Extraido = dataTyT.programa;
         output.Institucion_Extraida = dataTyT.institucion;
+        
+        console.log(`[PROCESS] Datos TyT extraídos:`, {
+          EK: dataTyT.registroEK,
+          numDoc: dataTyT.numDocumento,
+          fecha: dataTyT.fechaPresentacion,
+          programa: dataTyT.programa.substring(0, 50) + '...',
+          institucion: dataTyT.institucion.substring(0, 50) + '...'
+        });
+        
+        // Validar número de documento
         if (dataTyT.numDocumento === inputData.Numero_de_Documento) {
           output.Num_Doc_Valido = 'Valido';
+          console.log(`[PROCESS] Número de documento COINCIDE`);
         } else {
           output.Num_Doc_Valido = 'Revision Manual';
+          console.log(`[PROCESS] Número de documento NO COINCIDE: ${dataTyT.numDocumento} vs ${inputData.Numero_de_Documento}`);
         }
+        
+        // Validar institución CUN
         const dictionaryCUN = await getDictionaryForDocumentType('cun_institutions');
         const validInstitution = await validateTextWithDictionary(dataTyT.institucion, dictionaryCUN);
 
         if (validInstitution) {
           output.Institucion_Valida = 'Valido';
+          console.log(`[PROCESS] Institución CUN VÁLIDA`);
         } else {
           output.Institucion_Valida = 'Revision Manual';
+          console.log(`[PROCESS] Institución CUN REQUIERE REVISIÓN`);
         }
       }
       
       output[outputField] = "Documento Valido";
+      console.log(`[PROCESS] ${docType} marcado como VÁLIDO`);
+      
     } else {
       output[outputField] = "Revision Manual";
+      console.log(`[PROCESS] ${docType} marcado para REVISIÓN MANUAL`);
     }
+    
   } catch (error) {
     console.error(`[PROCESS] Error procesando ${docType}:`, error.message);
-    output[outputField] = "Revision Manual";
+    
+    // Diferentes mensajes según el tipo de error
+    if (error.message.includes('HTML_FILE_DETECTED')) {
+      output[outputField] = "Archivo HTML detectado - Revision Manual";
+    } else if (error.message.includes('NO_TEXT_EXTRACTED')) {
+      output[outputField] = "Sin texto extraíble - Revision Manual";
+    } else if (error.message.includes('PERMISSION_DENIED')) {
+      output[outputField] = "Sin permisos de acceso - Revision Manual";
+    } else if (error.message.includes('DOCUMENT_TOO_LARGE')) {
+      output[outputField] = "Documento muy grande - Revision Manual";
+    } else if (error.message.includes('UNSUPPORTED_FILE_TYPE')) {
+      output[outputField] = "Tipo de archivo no soportado - Revision Manual";
+    } else {
+      output[outputField] = "Error en procesamiento - Revision Manual";
+    }
+    
+    console.error(`[PROCESS] Detalle del error para ${docType}:`, {
+      message: error.message,
+      stack: error.stack?.substring(0, 200) + '...'
+    });
   }
+}
+
+/**
+ * Formatea bytes a formato legible
+ */
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
 module.exports = {
