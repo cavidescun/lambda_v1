@@ -69,7 +69,6 @@ async function insertDBData(data) {
         Fecha_Presentacion_Extraida,
         Institucion_Valida,
         Num_Doc_Valido,
-        FechaProcesamiento
       ) VALUES (
         @ID,
         @NombreCompleto,
@@ -98,7 +97,6 @@ async function insertDBData(data) {
         @Fecha_Presentacion_Extraida,
         @Institucion_Valida,
         @Num_Doc_Valido,
-        @FechaProcesamiento
       )
     `;
     

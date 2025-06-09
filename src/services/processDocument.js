@@ -63,7 +63,7 @@ async function processDocumentType(documentMap, docType, output, outputField, in
     const file = documentMap[docType];
     if (!file) {
       console.log(`[PROCESS] No se encontró archivo para tipo: ${docType}`);
-      output[outputField] = "N/A";
+      output[outputField] = "Documento no adjunto";
       return;
     }
 
