@@ -81,13 +81,11 @@ async function processDocumentType(documentMap, docType, output, outputField, in
     console.log(`[PROCESS] Validación ${docType}: ${isValid ? 'VÁLIDO' : 'INVÁLIDO'}`);
 
     if (isValid) {
-      // Procesamiento especial para pruebas TyT
       if (docType === 'prueba_tt') {
         console.log(`[PROCESS] Extrayendo datos específicos de TyT`);
         
         const dataTyT = await extractDataTyT(extractedText);
-        
-        // Asignar datos extraídos
+
         output.EK = dataTyT.registroEK;
         output.Num_Documento_Extraido = dataTyT.numDocumento;
         output.Fecha_Presentacion_Extraida = dataTyT.fechaPresentacion;
@@ -101,8 +99,7 @@ async function processDocumentType(documentMap, docType, output, outputField, in
           programa: dataTyT.programa.substring(0, 50) + '...',
           institucion: dataTyT.institucion.substring(0, 50) + '...'
         });
-        
-        // Validar número de documento
+
         if (dataTyT.numDocumento === inputData.Numero_de_Documento) {
           output.Num_Doc_Valido = 'Valido';
           console.log(`[PROCESS] Número de documento COINCIDE`);
@@ -110,8 +107,7 @@ async function processDocumentType(documentMap, docType, output, outputField, in
           output.Num_Doc_Valido = 'Revision Manual';
           console.log(`[PROCESS] Número de documento NO COINCIDE: ${dataTyT.numDocumento} vs ${inputData.Numero_de_Documento}`);
         }
-        
-        // Validar institución CUN
+
         const dictionaryCUN = await getDictionaryForDocumentType('cun_institutions');
         const validInstitution = await validateTextWithDictionary(dataTyT.institucion, dictionaryCUN);
 
@@ -134,8 +130,7 @@ async function processDocumentType(documentMap, docType, output, outputField, in
     
   } catch (error) {
     console.error(`[PROCESS] Error procesando ${docType}:`, error.message);
-    
-    // Diferentes mensajes según el tipo de error
+
     if (error.message.includes('HTML_FILE_DETECTED')) {
       output[outputField] = "Archivo HTML detectado - Revision Manual";
     } else if (error.message.includes('NO_TEXT_EXTRACTED')) {

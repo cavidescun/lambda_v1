@@ -65,12 +65,10 @@ async function validateDocument(documentBuffer, filePath) {
     throw new Error("DOCUMENT_TOO_SMALL");
   }
   
-  // Verificar tamaño máximo
   if (documentBuffer.length > SIZE_LIMITS.ASYNC_BYTES) {
     throw new Error("DOCUMENT_TOO_LARGE");
   }
-  
-  // Verificar tipo de archivo por magic numbers
+
   const fileType = detectFileType(documentBuffer);
   if (!['PDF', 'PNG', 'JPEG', 'TIFF'].includes(fileType)) {
     throw new Error(`UNSUPPORTED_FILE_TYPE: ${fileType}`);
@@ -79,9 +77,6 @@ async function validateDocument(documentBuffer, filePath) {
   console.log(`[TEXTRACT] Documento validado - Tipo: ${fileType}, Tamaño: ${formatBytes(documentBuffer.length)}`);
 }
 
-/**
- * Detecta el tipo de archivo por magic numbers
- */
 function detectFileType(buffer) {
   const header = buffer.slice(0, 8);
   
