@@ -3,8 +3,8 @@ const fs = require("fs-extra");
 
 const textract = new AWS.Textract({
   httpOptions: {
-    timeout: 60000,
-    retries: 3,
+    timeout: 120000, // Aumentado para documentos multipágina
+    retries: 5,
   },
 });
 
@@ -26,22 +26,20 @@ const SIZE_LIMITS = {
   ASYNC_BYTES: 500 * 1024 * 1024
 };
 
-
-async function extractTextFromDocument(filePath, documentType = null) {
+async function extractTextFromDocument(filePath, documentType = null, options = {}) {
   try {
     console.log(`[TEXTRACT] Iniciando extracción para: ${filePath}`);
     
     const documentBuffer = await fs.readFile(filePath);
-
     await validateDocument(documentBuffer, filePath);
 
     const useAnalyze = shouldUseAnalyzeDocument(documentBuffer.length, documentType);
     
     let result;
     if (useAnalyze) {
-      result = await extractWithAnalyzeDocument(documentBuffer, documentType);
+      result = await extractWithAnalyzeDocument(documentBuffer, documentType, options);
     } else {
-      result = await extractWithDetectDocument(documentBuffer);
+      result = await extractWithDetectDocument(documentBuffer, options);
     }
     
     return result;
@@ -51,7 +49,6 @@ async function extractTextFromDocument(filePath, documentType = null) {
     throw error;
   }
 }
-
 
 async function validateDocument(documentBuffer, filePath) {
   const headerCheck = documentBuffer.slice(0, 20).toString();
@@ -97,7 +94,6 @@ function detectFileType(buffer) {
 }
 
 function shouldUseAnalyzeDocument(fileSize, documentType) {
-
   const structuredDocuments = ['diploma_bachiller', 'diploma_tecnico', 'diploma_tecnologo', 
                               'titulo_profesional', 'prueba_tt', 'icfes', 'recibo_pago'];
 
@@ -112,7 +108,7 @@ function shouldUseAnalyzeDocument(fileSize, documentType) {
   return true;
 }
 
-async function extractWithAnalyzeDocument(documentBuffer, documentType) {
+async function extractWithAnalyzeDocument(documentBuffer, documentType, options = {}) {
   try {
     console.log(`[TEXTRACT] Usando analyzeDocument para tipo: ${documentType}`);
     
@@ -129,14 +125,14 @@ async function extractWithAnalyzeDocument(documentBuffer, documentType) {
     if (documentBuffer.length <= SIZE_LIMITS.SYNC_BYTES) {
       result = await textract.analyzeDocument(params).promise();
     } else {
-      result = await analyzeDocumentAsync(documentBuffer, features);
+      result = await analyzeDocumentLarge(documentBuffer, features);
     }
 
-    return processAnalyzeResult(result, documentType);
+    return processAnalyzeResult(result, documentType, options);
     
   } catch (error) {
     console.warn(`[TEXTRACT] Error en analyzeDocument, fallback a detectDocument:`, error.message);
-    return await extractWithDetectDocument(documentBuffer);
+    return await extractWithDetectDocument(documentBuffer, options);
   }
 }
 
@@ -147,17 +143,19 @@ function getFeatureTypesForDocument(documentType) {
   return DOCUMENT_FEATURES[documentType];
 }
 
-function processAnalyzeResult(result, documentType) {
+function processAnalyzeResult(result, documentType, options = {}) {
   const extractedData = {
     text: '',
     confidence: 0,
     forms: [],
     tables: [],
     layout: [],
+    pages: [], // Nueva propiedad para manejar páginas
     metadata: {
       totalBlocks: result.Blocks ? result.Blocks.length : 0,
       documentType: documentType,
-      extractionMethod: 'analyzeDocument'
+      extractionMethod: 'analyzeDocument',
+      totalPages: 0
     }
   };
   
@@ -168,36 +166,72 @@ function processAnalyzeResult(result, documentType) {
   let confidenceSum = 0;
   let confidenceCount = 0;
   
-  // Procesar diferentes tipos de bloques
-  result.Blocks.forEach(block => {
-    switch (block.BlockType) {
-      case 'LINE':
-        extractedData.text += block.Text + ' ';
-        if (block.Confidence) {
-          confidenceSum += block.Confidence;
-          confidenceCount++;
-        }
-        break;
-        
-      case 'KEY_VALUE_SET':
-        if (block.EntityTypes && block.EntityTypes.includes('KEY')) {
-          extractedData.forms.push(processKeyValuePair(block, result.Blocks));
-        }
-        break;
-        
-      case 'TABLE':
-        extractedData.tables.push(processTable(block, result.Blocks));
-        break;
-        
-      case 'LAYOUT':
-        extractedData.layout.push({
-          type: block.LayoutType,
-          text: block.Text,
-          confidence: block.Confidence,
-          geometry: block.Geometry
-        });
-        break;
-    }
+  // Agrupar bloques por página
+  const pageBlocks = groupBlocksByPage(result.Blocks);
+  extractedData.metadata.totalPages = Object.keys(pageBlocks).length;
+  
+  console.log(`[TEXTRACT] Procesando ${extractedData.metadata.totalPages} páginas`);
+
+  // Procesar cada página
+  Object.keys(pageBlocks).forEach(pageNumber => {
+    const blocks = pageBlocks[pageNumber];
+    const pageData = {
+      pageNumber: parseInt(pageNumber),
+      text: '',
+      forms: [],
+      tables: [],
+      layout: [],
+      confidence: 0
+    };
+    
+    let pageConfidenceSum = 0;
+    let pageConfidenceCount = 0;
+    
+    blocks.forEach(block => {
+      switch (block.BlockType) {
+        case 'LINE':
+          pageData.text += block.Text + ' ';
+          extractedData.text += block.Text + ' ';
+          if (block.Confidence) {
+            confidenceSum += block.Confidence;
+            confidenceCount++;
+            pageConfidenceSum += block.Confidence;
+            pageConfidenceCount++;
+          }
+          break;
+          
+        case 'KEY_VALUE_SET':
+          if (block.EntityTypes && block.EntityTypes.includes('KEY')) {
+            const keyValue = processKeyValuePair(block, blocks);
+            pageData.forms.push(keyValue);
+            extractedData.forms.push({...keyValue, page: parseInt(pageNumber)});
+          }
+          break;
+          
+        case 'TABLE':
+          const table = processTable(block, blocks);
+          pageData.tables.push(table);
+          extractedData.tables.push({...table, page: parseInt(pageNumber)});
+          break;
+          
+        case 'LAYOUT':
+          const layout = {
+            type: block.LayoutType,
+            text: block.Text,
+            confidence: block.Confidence,
+            geometry: block.Geometry
+          };
+          pageData.layout.push(layout);
+          extractedData.layout.push({...layout, page: parseInt(pageNumber)});
+          break;
+      }
+    });
+
+    pageData.confidence = pageConfidenceCount > 0 ? pageConfidenceSum / pageConfidenceCount : 0;
+    pageData.text = pageData.text.trim();
+    extractedData.pages.push(pageData);
+    
+    console.log(`[TEXTRACT] Página ${pageNumber} procesada - Confianza: ${pageData.confidence.toFixed(2)}%`);
   });
 
   extractedData.confidence = confidenceCount > 0 ? confidenceSum / confidenceCount : 0;
@@ -207,9 +241,32 @@ function processAnalyzeResult(result, documentType) {
     throw new Error("NO_TEXT_EXTRACTED");
   }
   
-  console.log(`[TEXTRACT] Extracción completada - Confianza: ${extractedData.confidence.toFixed(2)}%`);
+  console.log(`[TEXTRACT] Extracción completada - Confianza total: ${extractedData.confidence.toFixed(2)}%`);
 
-  return extractedData.text;
+  // Retornar según las opciones
+  if (options.returnFullData) {
+    return extractedData;
+  } else if (options.returnByPages) {
+    return extractedData.pages;
+  } else {
+    return extractedData.text;
+  }
+}
+
+function groupBlocksByPage(blocks) {
+  const pageBlocks = {};
+  
+  blocks.forEach(block => {
+    const pageNumber = block.Page || 1; // Default a página 1 si no está especificada
+    
+    if (!pageBlocks[pageNumber]) {
+      pageBlocks[pageNumber] = [];
+    }
+    
+    pageBlocks[pageNumber].push(block);
+  });
+  
+  return pageBlocks;
 }
 
 function processKeyValuePair(keyBlock, allBlocks) {
@@ -233,7 +290,6 @@ function processKeyValuePair(keyBlock, allBlocks) {
     confidence: keyBlock.Confidence
   };
 }
-
 
 function processTable(tableBlock, allBlocks) {
   const table = {
@@ -271,7 +327,6 @@ function processTable(tableBlock, allBlocks) {
   return table;
 }
 
-
 function getBlockText(block, allBlocks) {
   let text = block.Text || '';
   
@@ -292,9 +347,7 @@ function getBlockText(block, allBlocks) {
   return text;
 }
 
-
-async function analyzeDocumentAsync(documentBuffer, features) {
-
+async function analyzeDocumentLarge(documentBuffer, features) {
   const params = {
     Document: {
       Bytes: documentBuffer,
@@ -304,15 +357,15 @@ async function analyzeDocumentAsync(documentBuffer, features) {
 
   const extendedTextract = new AWS.Textract({
     httpOptions: {
-      timeout: 120000, // 2 minutos
-      retries: 5,
+      timeout: 300000, // 5 minutos para documentos grandes
+      retries: 3,
     },
   });
   
   return await extendedTextract.analyzeDocument(params).promise();
 }
 
-async function extractWithDetectDocument(documentBuffer) {
+async function extractWithDetectDocument(documentBuffer, options = {}) {
   console.log(`[TEXTRACT] Usando detectDocumentText (método básico)`);
   
   const params = {
@@ -323,33 +376,60 @@ async function extractWithDetectDocument(documentBuffer) {
   
   const result = await textract.detectDocumentText(params).promise();
   
+  // Agrupar bloques por página
+  const pageBlocks = groupBlocksByPage(result.Blocks || []);
+  const totalPages = Object.keys(pageBlocks).length;
+  
+  console.log(`[TEXTRACT] Procesando ${totalPages} páginas con detectDocumentText`);
+  
   let extractedText = "";
   let confidenceSum = 0;
   let confidenceCount = 0;
+  const pages = [];
   
-  if (result.Blocks && result.Blocks.length > 0) {
-    result.Blocks.forEach((block) => {
+  Object.keys(pageBlocks).forEach(pageNumber => {
+    const blocks = pageBlocks[pageNumber];
+    let pageText = "";
+    let pageConfidenceSum = 0;
+    let pageConfidenceCount = 0;
+    
+    blocks.forEach((block) => {
       if (block.BlockType === "LINE") {
+        pageText += block.Text + " ";
         extractedText += block.Text + " ";
         if (block.Confidence) {
           confidenceSum += block.Confidence;
           confidenceCount++;
+          pageConfidenceSum += block.Confidence;
+          pageConfidenceCount++;
         }
       }
     });
-  }
+    
+    const pageConfidence = pageConfidenceCount > 0 ? pageConfidenceSum / pageConfidenceCount : 0;
+    pages.push({
+      pageNumber: parseInt(pageNumber),
+      text: pageText.trim(),
+      confidence: pageConfidence
+    });
+    
+    console.log(`[TEXTRACT] Página ${pageNumber} procesada - Confianza: ${pageConfidence.toFixed(2)}%`);
+  });
   
   const avgConfidence = confidenceCount > 0 ? confidenceSum / confidenceCount : 0;
-  console.log(`[TEXTRACT] Confianza promedio: ${avgConfidence.toFixed(2)}%`);
+  console.log(`[TEXTRACT] Confianza promedio total: ${avgConfidence.toFixed(2)}%`);
   
   const trimmedText = extractedText.trim();
   if (trimmedText.length === 0) {
     throw new Error("NO_TEXT_EXTRACTED");
   }
-  
-  return trimmedText;
-}
 
+  if (options.returnByPages) {
+    return pages;
+  } else {
+    return trimmedText;
+  }
+}
 
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
@@ -359,11 +439,21 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+async function extractTextByPages(filePath, documentType = null) {
+  return await extractTextFromDocument(filePath, documentType, { returnByPages: true });
+}
+
+async function extractFullData(filePath, documentType = null) {
+  return await extractTextFromDocument(filePath, documentType, { returnFullData: true });
+}
+
 async function extractTextWithDocumentType(filePath, documentType) {
   return await extractTextFromDocument(filePath, documentType);
 }
 
 module.exports = {
   extractTextFromDocument,
-  extractTextWithDocumentType
+  extractTextWithDocumentType,
+  extractTextByPages,
+  extractFullData
 };
