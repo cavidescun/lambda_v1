@@ -1,6 +1,6 @@
 const { getDictionaryForDocumentType } = require('./dictionaryService');
 const { validateTextWithDictionary} = require('./validatorDocuments');
-const { extractTextWithDocumentType } = require('./textract');
+const { extractTextFromDocument } = require('./textract');
 const { extractDataTyT } = require('./extractDataDocuments');
 
 async function processDocuments(inputData, downloadedFiles, documentUrls) {
@@ -71,7 +71,7 @@ async function processDocumentType(documentMap, docType, output, outputField, in
 
     console.log(`[PROCESS] Archivo encontrado: ${file.fileName} (${formatBytes(file.size)})`);
 
-    const extractedText = await extractTextWithDocumentType(file.path, docType);
+    const extractedText = await extractTextFromDocument(file.path, docType);
     
     console.log(`[PROCESS] Texto extraído para ${docType}: ${extractedText.length} caracteres`);
 
