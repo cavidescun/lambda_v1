@@ -17,7 +17,6 @@ async function extractTextFromDocument(filePath) {
     const fileStats = await getFileStats(filePath);
     console.log(`[TEXTRACT] Archivo: ${fileStats.name} (${fileStats.sizeFormatted})`);
 
-    // Verificar si es HTML
     const documentBuffer = await fs.readFile(filePath);
     const headerCheck = documentBuffer.slice(0, 20).toString();
     if (
@@ -28,14 +27,12 @@ async function extractTextFromDocument(filePath) {
       throw new Error("HTML_FILE_DETECTED");
     }
 
-    // Dividir PDF en páginas si es necesario
     const pageFiles = await splitPdfIntoPages(filePath);
     console.log(`[TEXTRACT] Procesando ${pageFiles.length} archivo(s)`);
 
     let combinedText = "";
     const extractionResults = [];
 
-    // Procesar cada página/archivo
     for (let i = 0; i < pageFiles.length; i++) {
       const pageFile = pageFiles[i];
       const pageNumber = i + 1;
@@ -76,12 +73,10 @@ async function extractTextFromDocument(filePath) {
       }
     }
 
-    // Limpiar archivos de páginas divididas si se crearon
     if (pageFiles.length > 1) {
       await cleanupSplitFiles(pageFiles, filePath);
     }
 
-    // Verificar resultados
     const successfulPages = extractionResults.filter(r => r.success).length;
     const totalTextLength = combinedText.trim().length;
 
@@ -144,7 +139,6 @@ async function cleanupSplitFiles(pageFiles, originalFile) {
       }
     }
 
-    // Limpiar directorio de páginas si existe y está vacío
     if (pageFiles.length > 1) {
       const splitDir = path.dirname(pageFiles.find(f => f !== originalFile));
       if (splitDir && splitDir !== path.dirname(originalFile)) {

@@ -44,16 +44,19 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     }
   }
 
-  await processDocumentType(documentMap, 'cedula', output, 'FotocopiaDocumento', inputData);
-  await processDocumentType(documentMap, 'diploma_bachiller', output, 'DiplomayActaGradoBachiller', inputData);
-  await processDocumentType(documentMap, 'diploma_tecnico', output, 'DiplomayActaGradoTecnico', inputData);
-  await processDocumentType(documentMap, 'diploma_tecnologo', output, 'DiplomayActaGradoTecnologo', inputData);
-  await processDocumentType(documentMap, 'titulo_profesional', output, 'DiplomayActaGradoPregrado', inputData);
-  await processDocumentType(documentMap, 'prueba_tt', output, 'ResultadoSaberProDelNivelParaGrado', inputData);
-  await processDocumentType(documentMap, 'icfes', output, 'ExamenIcfes_11', inputData);
-  await processDocumentType(documentMap, 'recibo_pago', output, 'RecibiDePagoDerechosDeGrado', inputData);
-  await processDocumentType(documentMap, 'encuesta_m0', output, 'Encuesta_M0', inputData);
-  await processDocumentType(documentMap, 'acta_homologacion', output, 'Acta_Homologacion', inputData);
+  await Promise.all([
+  processDocumentType(documentMap, 'cedula', output, 'FotocopiaDocumento', inputData),
+  processDocumentType(documentMap, 'diploma_bachiller', output, 'DiplomayActaGradoBachiller', inputData),
+  processDocumentType(documentMap, 'diploma_tecnico', output, 'DiplomayActaGradoTecnico', inputData),
+  processDocumentType(documentMap, 'diploma_tecnologo', output, 'DiplomayActaGradoTecnologo', inputData),
+  processDocumentType(documentMap, 'titulo_profesional', output, 'DiplomayActaGradoPregrado', inputData),
+  processDocumentType(documentMap, 'prueba_tt', output, 'ResultadoSaberProDelNivelParaGrado', inputData),
+  processDocumentType(documentMap, 'icfes', output, 'ExamenIcfes_11', inputData),
+  processDocumentType(documentMap, 'recibo_pago', output, 'RecibiDePagoDerechosDeGrado', inputData),
+  processDocumentType(documentMap, 'encuesta_m0', output, 'Encuesta_M0', inputData),
+  processDocumentType(documentMap, 'acta_homologacion', output, 'Acta_Homologacion', inputData),
+]);
+
   console.log('[PROCESS] Procesamiento completado');
   return output;
 }
