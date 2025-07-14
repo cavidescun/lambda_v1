@@ -34,6 +34,7 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     Num_Doc_Valido: 'N/A',
   };
 
+  // Crear mapa de documentos incluyendo archivos con errores
   const documentMap = {};
   for (const file of downloadedFiles) {
     for (const [docType, url] of Object.entries(documentUrls)) {
@@ -44,18 +45,19 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     }
   }
 
+  // Procesar todos los documentos en paralelo
   await Promise.all([
-  processDocumentType(documentMap, 'cedula', output, 'FotocopiaDocumento', inputData),
-  processDocumentType(documentMap, 'diploma_bachiller', output, 'DiplomayActaGradoBachiller', inputData),
-  processDocumentType(documentMap, 'diploma_tecnico', output, 'DiplomayActaGradoTecnico', inputData),
-  processDocumentType(documentMap, 'diploma_tecnologo', output, 'DiplomayActaGradoTecnologo', inputData),
-  processDocumentType(documentMap, 'titulo_profesional', output, 'DiplomayActaGradoPregrado', inputData),
-  processDocumentType(documentMap, 'prueba_tt', output, 'ResultadoSaberProDelNivelParaGrado', inputData),
-  processDocumentType(documentMap, 'icfes', output, 'ExamenIcfes_11', inputData),
-  processDocumentType(documentMap, 'recibo_pago', output, 'RecibiDePagoDerechosDeGrado', inputData),
-  processDocumentType(documentMap, 'encuesta_m0', output, 'Encuesta_M0', inputData),
-  processDocumentType(documentMap, 'acta_homologacion', output, 'Acta_Homologacion', inputData),
-]);
+    processDocumentType(documentMap, 'cedula', output, 'FotocopiaDocumento', inputData),
+    processDocumentType(documentMap, 'diploma_bachiller', output, 'DiplomayActaGradoBachiller', inputData),
+    processDocumentType(documentMap, 'diploma_tecnico', output, 'DiplomayActaGradoTecnico', inputData),
+    processDocumentType(documentMap, 'diploma_tecnologo', output, 'DiplomayActaGradoTecnologo', inputData),
+    processDocumentType(documentMap, 'titulo_profesional', output, 'DiplomayActaGradoPregrado', inputData),
+    processDocumentType(documentMap, 'prueba_tt', output, 'ResultadoSaberProDelNivelParaGrado', inputData),
+    processDocumentType(documentMap, 'icfes', output, 'ExamenIcfes_11', inputData),
+    processDocumentType(documentMap, 'recibo_pago', output, 'RecibiDePagoDerechosDeGrado', inputData),
+    processDocumentType(documentMap, 'encuesta_m0', output, 'Encuesta_M0', inputData),
+    processDocumentType(documentMap, 'acta_homologacion', output, 'Acta_Homologacion', inputData),
+  ]);
 
   console.log('[PROCESS] Procesamiento completado');
   return output;
@@ -66,12 +68,40 @@ async function processDocumentType(documentMap, docType, output, outputField, in
     console.log(`[PROCESS] Procesando documento tipo: ${docType}`);
     
     const file = documentMap[docType];
+    
+    // Caso 1: No hay archivo para este tipo de documento
     if (!file) {
       console.log(`[PROCESS] No se encontró archivo para tipo: ${docType}`);
       output[outputField] = "Documento no adjunto";
       return;
     }
 
+    // Caso 2: El archivo falló en la descarga
+    if (file.status === 'error') {
+      console.error(`[PROCESS] Error en descarga para ${docType}: ${file.error}`);
+      
+      // Determinar el mensaje específico basado en el tipo de error
+      let errorMessage = "Error al descargar - Revision Manual";
+      
+      if (file.error.includes('PERMISSION_DENIED')) {
+        errorMessage = "Sin permisos de acceso - Revision Manual";
+      } else if (file.error.includes('FILE_NOT_FOUND')) {
+        errorMessage = "Archivo no encontrado - Revision Manual";
+      } else if (file.error.includes('AUTH_ERROR') || file.error.includes('AUTH_GENERAL_ERROR')) {
+        errorMessage = "Error de autenticación - Revision Manual";
+      } else if (file.error.includes('INVALID_URL')) {
+        errorMessage = "URL inválida - Revision Manual";
+      } else if (file.error.includes('DOWNLOAD_TIMEOUT')) {
+        errorMessage = "Tiempo de descarga agotado - Revision Manual";
+      } else if (file.error.includes('NO_ACCESS_TOKEN')) {
+        errorMessage = "Sin credenciales válidas - Revision Manual";
+      }
+      
+      output[outputField] = errorMessage;
+      return;
+    }
+
+    // Caso 3: Archivo descargado exitosamente, proceder con el procesamiento
     console.log(`[PROCESS] Archivo encontrado: ${file.fileName} (${formatBytes(file.size)})`);
 
     const extractedText = await extractTextFromDocument(file.path, docType);
@@ -153,6 +183,7 @@ async function processDocumentType(documentMap, docType, output, outputField, in
   } catch (error) {
     console.error(`[PROCESS] Error procesando ${docType}:`, error.message);
 
+    // Manejo de errores específicos durante el procesamiento
     if (error.message.includes('HTML_FILE_DETECTED')) {
       output[outputField] = "Archivo HTML detectado - Revision Manual";
     } else if (error.message.includes('NO_TEXT_EXTRACTED')) {

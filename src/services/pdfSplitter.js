@@ -2,21 +2,33 @@ const fs = require("fs-extra");
 const path = require("path");
 const { PDFDocument } = require("pdf-lib");
 
+// Configuración: máximo de páginas a procesar
+const MAX_PAGES_TO_PROCESS = 3;
+
 async function splitPdfIntoPages(pdfPath) {
   try {
     console.log(`[PDF-SPLITTER] Analizando PDF: ${path.basename(pdfPath)}`);
+    
     if (!pdfPath.toLowerCase().endsWith('.pdf')) {
       console.log(`[PDF-SPLITTER] El archivo no es PDF, retornando archivo original`);
       return [pdfPath];
     }
+    
     const pdfBuffer = await fs.readFile(pdfPath);
     const pdfDoc = await PDFDocument.load(pdfBuffer);
-    const pageCount = pdfDoc.getPageCount();
+    const totalPageCount = pdfDoc.getPageCount();
     
-    console.log(`[PDF-SPLITTER] PDF tiene ${pageCount} página(s)`);
+    console.log(`[PDF-SPLITTER] PDF tiene ${totalPageCount} página(s) total(es)`);
 
-    if (pageCount <= 1) {
-      console.log(`[PDF-SPLITTER] PDF de una sola página, no requiere división`);
+    // Determinar cuántas páginas procesar
+    const pagesToProcess = Math.min(totalPageCount, MAX_PAGES_TO_PROCESS);
+    
+    if (totalPageCount > MAX_PAGES_TO_PROCESS) {
+      console.log(`[PDF-SPLITTER] ⚠️ Limitando procesamiento a las primeras ${MAX_PAGES_TO_PROCESS} páginas de ${totalPageCount} totales`);
+    }
+
+    if (pagesToProcess <= 1) {
+      console.log(`[PDF-SPLITTER] PDF de una sola página o límite alcanzado, no requiere división`);
       return [pdfPath];
     }
 
@@ -27,9 +39,10 @@ async function splitPdfIntoPages(pdfPath) {
 
     const splitPages = [];
 
-    for (let i = 0; i < pageCount; i++) {
+    // Procesar solo las primeras páginas hasta el límite
+    for (let i = 0; i < pagesToProcess; i++) {
       try {
-        console.log(`[PDF-SPLITTER] Procesando página ${i + 1}/${pageCount}`);
+        console.log(`[PDF-SPLITTER] Procesando página ${i + 1}/${pagesToProcess} (de ${totalPageCount} totales)`);
 
         const newPdfDoc = await PDFDocument.create();
         const [page] = await newPdfDoc.copyPages(pdfDoc, [i]);
@@ -46,6 +59,7 @@ async function splitPdfIntoPages(pdfPath) {
         console.log(`[PDF-SPLITTER] ✓ Página ${i + 1} guardada como: ${pageFileName}`);
       } catch (pageError) {
         console.error(`[PDF-SPLITTER] Error procesando página ${i + 1}:`, pageError.message);
+        // Continuar con la siguiente página si hay error en una específica
       }
     }
 
@@ -54,7 +68,13 @@ async function splitPdfIntoPages(pdfPath) {
       return [pdfPath];
     }
 
-    console.log(`[PDF-SPLITTER] ✓ PDF dividido en ${splitPages.length} página(s)`);
+    const skippedPages = totalPageCount - pagesToProcess;
+    if (skippedPages > 0) {
+      console.log(`[PDF-SPLITTER] ✓ PDF dividido en ${splitPages.length} página(s) procesadas. ${skippedPages} página(s) omitidas por límite`);
+    } else {
+      console.log(`[PDF-SPLITTER] ✓ PDF dividido en ${splitPages.length} página(s) - todas las páginas procesadas`);
+    }
+
     return splitPages;
 
   } catch (error) {
@@ -90,7 +110,23 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// Función para obtener el límite actual (útil para debugging)
+function getMaxPagesLimit() {
+  return MAX_PAGES_TO_PROCESS;
+}
+
+// Función para cambiar el límite dinámicamente si es necesario
+function setMaxPagesLimit(newLimit) {
+  if (newLimit && typeof newLimit === 'number' && newLimit > 0) {
+    console.log(`[PDF-SPLITTER] Límite de páginas cambiado de ${MAX_PAGES_TO_PROCESS} a ${newLimit}`);
+    return newLimit;
+  }
+  return MAX_PAGES_TO_PROCESS;
+}
+
 module.exports = {
   splitPdfIntoPages,
-  getFileStats
+  getFileStats,
+  getMaxPagesLimit,
+  setMaxPagesLimit
 };
