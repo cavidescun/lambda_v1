@@ -24,14 +24,14 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     RecibiDePagoDerechosDeGrado: "Documento no adjunto",
     Encuesta_M0: "Documento no adjunto",
     Acta_Homologacion: "Documento no adjunto",
-    EK: inputData.Nivel_de_formación_del_cuál_está_solicitando_grado === 'Especialización' ? 'N/A' : 'Extraccion Manual',
+    EK: 'N/A',
     Autorizacion_tratamiento_de_datos: inputData.Autorizacion_tratamiento_de_datos || '',
-    Num_Documento_Extraido: inputData.Nivel_de_formación_del_cuál_está_solicitando_grado === 'Especialización' ? 'N/A' : 'Extraccion Manual',
-    Institucion_Extraida: inputData.Nivel_de_formación_del_cuál_está_solicitando_grado === 'Especialización' ? 'N/A' : 'Extraccion Manual',
-    Programa_Extraido: inputData.Nivel_de_formación_del_cuál_está_solicitando_grado === 'Especialización' ? 'N/A' : 'Extraccion Manual',
-    Fecha_Presentacion_Extraida: inputData.Nivel_de_formación_del_cuál_está_solicitando_grado === 'Especialización' ? 'N/A' : 'Extraccion Manual',
-    Institucion_Valida: inputData.Nivel_de_formación_del_cuál_está_solicitando_grado === 'Especialización' ? 'N/A' : 'Revision Manual',
-    Num_Doc_Valido: inputData.Nivel_de_formación_del_cuál_está_solicitando_grado === 'Especialización' ? 'N/A' : 'Revision Manual',
+    Num_Documento_Extraido: 'N/A',
+    Institucion_Extraida:  'N/A',
+    Programa_Extraido: 'N/A',
+    Fecha_Presentacion_Extraida: 'N/A',
+    Institucion_Valida: 'N/A',
+    Num_Doc_Valido: 'N/A',
   };
 
   const documentMap = {};
