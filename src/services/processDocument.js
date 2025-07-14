@@ -89,37 +89,56 @@ async function processDocumentType(documentMap, docType, output, outputField, in
         
         const dataTyT = await extractDataTyT(extractedText);
 
-        output.EK = dataTyT.registroEK;
-        output.Num_Documento_Extraido = dataTyT.numDocumento;
-        output.Fecha_Presentacion_Extraida = dataTyT.fechaPresentacion;
-        output.Programa_Extraido = dataTyT.programa;
-        output.Institucion_Extraida = dataTyT.institucion;
+        const hasValidData = dataTyT.registroEK || dataTyT.numDocumento || dataTyT.fechaPresentacion || dataTyT.programa || dataTyT.institucion;
         
-        console.log(`[PROCESS] Datos TyT extraídos:`, {
-          EK: dataTyT.registroEK,
-          numDoc: dataTyT.numDocumento,
-          fecha: dataTyT.fechaPresentacion,
-          programa: dataTyT.programa.substring(0, 50) + '...',
-          institucion: dataTyT.institucion.substring(0, 50) + '...'
-        });
-
-        if (dataTyT.numDocumento === inputData.Numero_de_Documento) {
-          output.Num_Doc_Valido = 'Valido';
-          console.log(`[PROCESS] Número de documento COINCIDE`);
+        if (!hasValidData) {
+          output.EK = 'Extraccion Manual';
+          output.Num_Documento_Extraido = 'Extraccion Manual';
+          output.Fecha_Presentacion_Extraida = 'Extraccion Manual';
+          output.Programa_Extraido = 'Extraccion Manual';
+          output.Institucion_Extraida = 'Extraccion Manual';
+          output.Num_Doc_Valido = 'Extraccion Manual';
+          output.Institucion_Valida = 'Extraccion Manual';
+          
+          console.log(`[PROCESS] Sin datos extraíbles - marcado para extracción manual`);
         } else {
-          output.Num_Doc_Valido = 'Revision Manual';
-          console.log(`[PROCESS] Número de documento NO COINCIDE: ${dataTyT.numDocumento} vs ${inputData.Numero_de_Documento}`);
-        }
+          output.EK = dataTyT.registroEK || 'Extraccion Manual';
+          output.Num_Documento_Extraido = dataTyT.numDocumento || 'Extraccion Manual';
+          output.Fecha_Presentacion_Extraida = dataTyT.fechaPresentacion || 'Extraccion Manual';
+          output.Programa_Extraido = dataTyT.programa || 'Extraccion Manual';
+          output.Institucion_Extraida = dataTyT.institucion || 'Extraccion Manual';
+          
+          console.log(`[PROCESS] Datos TyT extraídos:`, {
+            EK: dataTyT.registroEK,
+            numDoc: dataTyT.numDocumento,
+            fecha: dataTyT.fechaPresentacion,
+            programa: dataTyT.programa ? dataTyT.programa.substring(0, 50) + '...' : 'N/A',
+            institucion: dataTyT.institucion ? dataTyT.institucion.substring(0, 50) + '...' : 'N/A'
+          });
 
-        const dictionaryCUN = await getDictionaryForDocumentType('cun_institutions');
-        const validInstitution = await validateTextWithDictionary(dataTyT.institucion, dictionaryCUN);
+          if (dataTyT.numDocumento === inputData.Numero_de_Documento) {
+            output.Num_Doc_Valido = 'Valido';
+            console.log(`[PROCESS] Número de documento COINCIDE`);
+          } else {
+            output.Num_Doc_Valido = 'Revision Manual';
+            console.log(`[PROCESS] Número de documento NO COINCIDE: ${dataTyT.numDocumento} vs ${inputData.Numero_de_Documento}`);
+          }
 
-        if (validInstitution) {
-          output.Institucion_Valida = 'Valido';
-          console.log(`[PROCESS] Institución CUN VÁLIDA`);
-        } else {
-          output.Institucion_Valida = 'Revision Manual';
-          console.log(`[PROCESS] Institución CUN REQUIERE REVISIÓN`);
+          if (dataTyT.institucion) {
+            const dictionaryCUN = await getDictionaryForDocumentType('cun_institutions');
+            const validInstitution = await validateTextWithDictionary(dataTyT.institucion, dictionaryCUN);
+
+            if (validInstitution) {
+              output.Institucion_Valida = 'Valido';
+              console.log(`[PROCESS] Institución CUN VÁLIDA`);
+            } else {
+              output.Institucion_Valida = 'Revision Manual';
+              console.log(`[PROCESS] Institución CUN REQUIERE REVISIÓN`);
+            }
+          } else {
+            output.Institucion_Valida = 'Extraccion Manual';
+            console.log(`[PROCESS] Sin datos de institución para validar`);
+          }
         }
       }
       
