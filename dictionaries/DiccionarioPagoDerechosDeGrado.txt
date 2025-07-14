@@ -1,10 +1,2 @@
-Aprobado
-pago aprovado
-transaccion 
-transacción
-banco 
-total 
-pagado
-exitoso
-detalle del pago
-referencia
+860401734
+860401734-9
