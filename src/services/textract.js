@@ -12,8 +12,7 @@ const textract = new AWS.Textract({
 
 async function extractTextFromDocument(filePath) {
   console.log(`[TEXTRACT] Iniciando extracción robusta de texto de: ${path.basename(filePath)}`);
-  
-  // Validación inicial del archivo
+
   try {
     await validateInputFile(filePath);
   } catch (validationError) {
@@ -21,7 +20,6 @@ async function extractTextFromDocument(filePath) {
     throw validationError;
   }
 
-  // Obtener estadísticas del archivo
   let fileStats;
   try {
     fileStats = await getFileStats(filePath);
@@ -32,7 +30,6 @@ async function extractTextFromDocument(filePath) {
     fileStats = { name: path.basename(filePath), size: 0, sizeFormatted: 'Unknown' };
   }
 
-  // Verificar contenido del archivo
   try {
     await validateFileContent(filePath);
   } catch (contentError) {
@@ -40,7 +37,6 @@ async function extractTextFromDocument(filePath) {
     throw contentError;
   }
 
-  // Dividir PDF en páginas con manejo de errores
   let pageFiles = [];
   try {
     pageFiles = await splitPdfIntoPages(filePath);
@@ -61,7 +57,6 @@ async function extractTextFromDocument(filePath) {
   let totalCharacters = 0;
   let successfulExtractions = 0;
 
-  // Procesar cada página/archivo con manejo individual de errores
   for (let i = 0; i < totalFilesToProcess; i++) {
     const pageFile = pageFiles[i];
     const pageNumber = i + 1;
@@ -113,7 +108,6 @@ async function extractTextFromDocument(filePath) {
     }
   }
 
-  // Limpiar archivos temporales con manejo de errores
   if (pageFiles.length > 1) {
     try {
       await cleanupSplitFiles(pageFiles, filePath);
@@ -122,7 +116,6 @@ async function extractTextFromDocument(filePath) {
     }
   }
 
-  // Generar resumen de extracción
   const totalTextLength = combinedText.trim().length;
   const totalProcessingTime = extractionResults.reduce((sum, r) => sum + (r.processingTimeMs || 0), 0);
 
@@ -132,7 +125,6 @@ async function extractTextFromDocument(filePath) {
   console.log(`[TEXTRACT]   - Tiempo total de procesamiento: ${totalProcessingTime}ms`);
   console.log(`[TEXTRACT]   - Límite de páginas aplicado: ${getMaxPagesLimit()}`);
 
-  // Validar resultado final
   if (totalTextLength === 0) {
     const errorSummary = extractionResults
       .filter(r => !r.success)
@@ -142,7 +134,6 @@ async function extractTextFromDocument(filePath) {
     throw new Error(`NO_TEXT_EXTRACTED: No se extrajo texto de ninguna página. Errores: ${errorSummary}`);
   }
 
-  // Advertencias sobre calidad del texto
   if (totalTextLength < 50) {
     console.warn(`[TEXTRACT] ⚠️ Texto extraído muy corto (${totalTextLength} caracteres). Posible problema de calidad.`);
   }
@@ -154,7 +145,6 @@ async function extractTextFromDocument(filePath) {
   return combinedText.trim();
 }
 
-// Función para validar archivo de entrada
 async function validateInputFile(filePath) {
   if (!filePath || typeof filePath !== 'string') {
     throw new Error('INVALID_FILE_PATH: Ruta de archivo inválida');
@@ -190,7 +180,6 @@ async function validateInputFile(filePath) {
   }
 }
 
-// Función para validar contenido del archivo
 async function validateFileContent(filePath) {
   try {
     const documentBuffer = await fs.readFile(filePath);
@@ -198,8 +187,7 @@ async function validateFileContent(filePath) {
     if (documentBuffer.length === 0) {
       throw new Error('EMPTY_BUFFER: Buffer de archivo vacío');
     }
-    
-    // Verificar si es un archivo HTML disfrazado
+
     const headerCheck = documentBuffer.slice(0, 100).toString().toLowerCase();
     if (headerCheck.includes('<!doctype') || 
         headerCheck.includes('<html') || 
@@ -207,8 +195,7 @@ async function validateFileContent(filePath) {
         headerCheck.includes('<body')) {
       throw new Error('HTML_FILE_DETECTED: Archivo HTML detectado, no es un documento válido');
     }
-    
-    // Verificar si es un archivo de error o página web
+
     const contentSnippet = documentBuffer.slice(0, 500).toString().toLowerCase();
     if (contentSnippet.includes('error 404') ||
         contentSnippet.includes('page not found') ||
@@ -227,7 +214,6 @@ async function validateFileContent(filePath) {
   }
 }
 
-// Función para extraer texto de forma segura de un archivo individual
 async function safeExtractTextFromSingleFile(filePath, pageNumber) {
   try {
     return await extractTextFromSingleFile(filePath);
@@ -245,10 +231,9 @@ async function extractTextFromSingleFile(filePath) {
   } catch (readError) {
     throw new Error(`FILE_READ_FAILED: No se pudo leer el archivo - ${readError.message}`);
   }
-  
-  // Verificar tamaño del buffer
+
   const fileSizeBytes = documentBuffer.length;
-  const maxSizeBytes = 10 * 1024 * 1024; // 10MB límite de Textract
+  const maxSizeBytes = 10 * 1024 * 1024; 
   
   if (fileSizeBytes > maxSizeBytes) {
     throw new Error(`DOCUMENT_TOO_LARGE: Archivo de ${formatBytes(fileSizeBytes)} excede el límite de ${formatBytes(maxSizeBytes)}`);
@@ -257,8 +242,7 @@ async function extractTextFromSingleFile(filePath) {
   if (fileSizeBytes < 100) {
     throw new Error(`DOCUMENT_TOO_SMALL: Archivo de ${formatBytes(fileSizeBytes)} es demasiado pequeño para ser válido`);
   }
-  
-  // Preparar parámetros para Textract
+
   const params = {
     Document: {
       Bytes: documentBuffer,
@@ -267,7 +251,6 @@ async function extractTextFromSingleFile(filePath) {
 
   let result;
   try {
-    // Llamar a Textract con timeout
     const textractPromise = textract.detectDocumentText(params).promise();
     result = await Promise.race([
       textractPromise,
@@ -279,7 +262,6 @@ async function extractTextFromSingleFile(filePath) {
     throw categorizeTextractError(textractError);
   }
 
-  // Procesar resultado
   let extractedText = "";
   let lineCount = 0;
   let wordCount = 0;
@@ -308,7 +290,6 @@ async function extractTextFromSingleFile(filePath) {
   }
 }
 
-// Función para categorizar errores de Textract
 function categorizeTextractError(error) {
   const errorMessage = error.message || '';
   const errorCode = error.code || '';
@@ -356,7 +337,6 @@ async function cleanupSplitFiles(pageFiles, originalFile) {
     const errors = [];
     
     for (const pageFile of pageFiles) {
-      // Solo eliminar archivos que no sean el original
       if (pageFile !== originalFile) {
         try {
           await fs.remove(pageFile);
@@ -369,7 +349,6 @@ async function cleanupSplitFiles(pageFiles, originalFile) {
       }
     }
 
-    // Limpiar directorio temporal si está vacío
     if (pageFiles.length > 1) {
       const splitDir = path.dirname(pageFiles.find(f => f !== originalFile));
       if (splitDir && splitDir !== path.dirname(originalFile)) {

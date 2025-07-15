@@ -15,15 +15,12 @@ exports.handler = async (event, context) => {
     console.log(`[MAIN] Tiempo de inicio: ${new Date().toISOString()}`);
     console.log(`[MAIN] Lambda timeout configurado: ${context.getRemainingTimeInMillis()}ms`);
 
-    // 1. Procesar el body del request con manejo de errores robusto
     try {
       if (typeof event.body === "string") {
         requestBody = JSON.parse(event.body);
       } else {
         requestBody = event.body || {};
       }
-      
-      // Validación básica del request
       if (!requestBody || Object.keys(requestBody).length === 0) {
         console.warn("[MAIN] Request body vacío, creando estructura básica");
         requestBody = { ID: 'unknown', Nombre_completo: 'No especificado' };
@@ -35,8 +32,7 @@ exports.handler = async (event, context) => {
       
     } catch (parseError) {
       console.error("[MAIN] ✗ Error procesando request body:", parseError.message);
-      
-      // Crear estructura básica para continuar procesamiento
+
       requestBody = {
         ID: 'parse_error',
         Nombre_completo: 'Error en parseo',
@@ -46,7 +42,6 @@ exports.handler = async (event, context) => {
       console.log("[MAIN] Continuando con estructura básica creada");
     }
 
-    // 2. Extraer URLs de documentos con fallback
     let documentsUrl = {};
     try {
       documentsUrl = extractDocumentUrls(requestBody);
@@ -56,16 +51,14 @@ exports.handler = async (event, context) => {
       
       if (urlCount === 0) {
         console.warn("[MAIN] ⚠️ No se encontraron URLs de documentos válidas");
-        // No retornamos error, continuamos con documentos vacíos
       }
       
     } catch (urlError) {
       console.error("[MAIN] ✗ Error extrayendo URLs:", urlError.message);
-      documentsUrl = {}; // Continuar con objeto vacío
+      documentsUrl = {};
       console.log("[MAIN] Continuando sin documentos para procesar");
     }
 
-    // 3. Descargar documentos con manejo de errores robusto
     let downloadedFiles = [];
     try {
       if (Object.keys(documentsUrl).length > 0) {
@@ -88,8 +81,6 @@ exports.handler = async (event, context) => {
       
     } catch (downloadError) {
       console.error("[MAIN] ✗ Error general en descarga:", downloadError.message);
-      
-      // Crear estructura de archivos con errores para todos los documentos
       downloadedFiles = Object.values(documentsUrl).map(url => ({
         originalUrl: url,
         fileId: null,
@@ -103,7 +94,6 @@ exports.handler = async (event, context) => {
       console.log("[MAIN] Continuando con archivos marcados como error");
     }
 
-    // 4. Procesar documentos con manejo de errores ultra-robusto
     let result = createDefaultResult(requestBody);
     try {
       const processStartTime = Date.now();
@@ -119,13 +109,11 @@ exports.handler = async (event, context) => {
     } catch (processError) {
       console.error("[MAIN] ✗ Error en procesamiento:", processError.message);
       console.error("[MAIN] Stack trace:", processError.stack);
-      
-      // Mantener la estructura básica pero marcar todo como error
+
       result = createDefaultResult(requestBody);
       result.processing_error = processError.message;
       result.status = "Error en procesamiento - todos los documentos requieren revision manual";
-      
-      // Marcar todos los campos de documentos como error
+
       markAllDocumentsAsError(result, "Error en procesamiento - Revision Manual");
       
       console.log("[MAIN] Continuando con resultado de error estructurado");
@@ -148,27 +136,21 @@ exports.handler = async (event, context) => {
       console.log("[MAIN] Continuando sin guardar en DB");
     }
 
-    // 6. Preparar respuesta exitosa
     const totalTime = Date.now() - startTime;
     console.log(`[MAIN] ✓ Proceso completado en ${totalTime}ms`);
     console.log(`[MAIN] Tiempo final: ${new Date().toISOString()}`);
     
     responseToReturn = formatResponse(200, {
       ...result,
-      processing_time_ms: totalTime,
-      timestamp: new Date().toISOString(),
-      status: result.status || "Procesamiento completado"
     });
 
   } catch (criticalError) {
-    // Último recurso: error crítico no manejado
     const totalTime = Date.now() - startTime;
     console.error("[MAIN] ✗ Error crítico no manejado:", criticalError.message);
     console.error("[MAIN] Stack completo:", criticalError.stack);
     console.error(`[MAIN] Tiempo hasta el error: ${totalTime}ms`);
     console.error(`[MAIN] Memoria utilizada: ${JSON.stringify(process.memoryUsage())}`);
 
-    // Crear respuesta de emergencia garantizada
     const emergencyResult = createEmergencyResult(requestBody, criticalError);
     
     responseToReturn = formatResponse(500, {

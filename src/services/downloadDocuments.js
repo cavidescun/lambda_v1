@@ -17,7 +17,6 @@ async function downloadDocuments(urls) {
     return createEmergencyDownloadResults(urls, 'TEMP_DIR_ERROR', tempError.message);
   }
 
-  // Validar URLs de entrada
   let validUrls = [];
   try {
     validUrls = validateAndSanitizeUrls(urls);
@@ -29,7 +28,6 @@ async function downloadDocuments(urls) {
 
   const downloadedFiles = [];
 
-  // Obtener credenciales de Google con manejo robusto
   let googleCredentials;
   try {
     googleCredentials = await googleAuth();
@@ -39,13 +37,11 @@ async function downloadDocuments(urls) {
     return createDownloadErrorResults(validUrls, 'AUTH_GENERAL_ERROR', authError.message);
   }
 
-  // Validar credenciales
   if (!googleCredentials?.access_token) {
     console.error(`[DOWNLOAD] Credenciales inválidas: sin access_token`);
     return createDownloadErrorResults(validUrls, 'NO_ACCESS_TOKEN', 'Credenciales sin access_token válido');
   }
 
-  // Procesar cada URL con manejo individual de errores
   for (let i = 0; i < validUrls.length; i++) {
     const url = validUrls[i];
     const urlNumber = i + 1;
@@ -76,13 +72,11 @@ async function downloadDocuments(urls) {
       });
     }
 
-    // Pequeña pausa para evitar throttling
     if (i < validUrls.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
 
-  // Generar resumen final
   const successful = downloadedFiles.filter(f => f.status === 'success').length;
   const failed = downloadedFiles.filter(f => f.status === 'error').length;
   
@@ -100,7 +94,6 @@ async function downloadDocuments(urls) {
   return downloadedFiles;
 }
 
-// Función para validar y sanitizar URLs
 function validateAndSanitizeUrls(urls) {
   if (!urls) {
     console.warn(`[DOWNLOAD] URLs es null/undefined`);
@@ -143,8 +136,7 @@ function validateAndSanitizeUrls(urls) {
         invalidUrls.push({ index: i, url: trimmedUrl, reason: 'No es URL de Google Drive' });
         continue;
       }
-      
-      // Verificar que se pueda extraer file ID
+
       try {
         extractFileIdFromUrl(trimmedUrl);
         validUrls.push(trimmedUrl);
@@ -167,10 +159,9 @@ function validateAndSanitizeUrls(urls) {
   return validUrls;
 }
 
-// Función para descargar un archivo individual de forma segura
 async function safeDownloadSingleFile(url, tempDir, googleCredentials, urlNumber) {
   try {
-    // Extraer file ID con validación
+
     let fileId;
     try {
       fileId = extractFileIdFromUrl(url);
@@ -186,8 +177,7 @@ async function safeDownloadSingleFile(url, tempDir, googleCredentials, urlNumber
         error: `INVALID_URL: ${fileIdError.message}`
       };
     }
-    
-    // Configurar cliente OAuth2 con validación
+
     let oauth2Client;
     try {
       oauth2Client = new google.auth.OAuth2(
@@ -212,7 +202,6 @@ async function safeDownloadSingleFile(url, tempDir, googleCredentials, urlNumber
       };
     }
 
-    // Descargar archivo con timeout y reintentos
     try {
       const filePath = await downloadFileFromDriveWithRetry(fileId, tempDir, oauth2Client, 3);
       const stats = await fs.stat(filePath);
@@ -252,7 +241,6 @@ async function safeDownloadSingleFile(url, tempDir, googleCredentials, urlNumber
   }
 }
 
-// Función para descargar con reintentos
 async function downloadFileFromDriveWithRetry(fileId, tempDir, oauth2Client, maxRetries = 3) {
   let lastError;
   
@@ -263,15 +251,13 @@ async function downloadFileFromDriveWithRetry(fileId, tempDir, oauth2Client, max
     } catch (error) {
       lastError = error;
       console.warn(`[DOWNLOAD] Intento ${attempt} falló para ${fileId}: ${error.message}`);
-      
-      // No reintentar en ciertos errores
+
       if (error.code === 404 || error.code === 403 || 
           error.message.includes('PERMISSION_DENIED') ||
           error.message.includes('FILE_NOT_FOUND')) {
         throw error;
       }
-      
-      // Esperar antes del siguiente intento (excepto en el último)
+
       if (attempt < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
       }
@@ -284,8 +270,7 @@ async function downloadFileFromDriveWithRetry(fileId, tempDir, oauth2Client, max
 async function downloadFileFromDrive(fileId, tempDir, oauth2Client) {
   try {
     const drive = google.drive({ version: "v3", auth: oauth2Client });
-    
-    // Obtener metadata del archivo con timeout
+
     let fileMetadata;
     try {
       const metadataPromise = drive.files.get({
@@ -311,8 +296,7 @@ async function downloadFileFromDrive(fileId, tempDir, oauth2Client) {
     const filePath = path.join(tempDir, sanitizedFileName);
     
     console.log(`[DOWNLOAD] Descargando: ${sanitizedFileName}`);
-    
-    // Descargar el archivo con timeout
+
     const downloadPromise = drive.files.get(
       {
         fileId: fileId,
@@ -333,8 +317,7 @@ async function downloadFileFromDrive(fileId, tempDir, oauth2Client) {
     return new Promise((resolve, reject) => {
       let downloadTimeout;
       let totalBytes = 0;
-      
-      // Timeout de 5 minutos para la descarga completa
+
       downloadTimeout = setTimeout(() => {
         writer.destroy();
         reject(new Error('DOWNLOAD_STREAM_TIMEOUT: Tiempo de descarga completa agotado'));
@@ -370,7 +353,6 @@ async function downloadFileFromDrive(fileId, tempDir, oauth2Client) {
   }
 }
 
-// Función para categorizar errores de descarga
 function categorizeDownloadError(error) {
   const errorMsg = error.message || '';
   const errorCode = error.code;
@@ -425,20 +407,16 @@ function extractFileIdFromUrl(url) {
   throw new Error(`No se pudo extraer File ID válido de la URL: ${truncateUrl(url)}`);
 }
 
-// Función para sanitizar nombres de archivo
 function sanitizeFileName(fileName) {
   try {
-    // Remover caracteres problemáticos
     let sanitized = fileName.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
-    
-    // Limitar longitud
+
     if (sanitized.length > 200) {
       const ext = path.extname(sanitized);
       const name = path.basename(sanitized, ext);
       sanitized = name.substring(0, 200 - ext.length) + ext;
     }
-    
-    // Asegurar que no esté vacío
+
     if (!sanitized || sanitized.trim().length === 0) {
       sanitized = `file_${Date.now()}.pdf`;
     }
@@ -449,7 +427,6 @@ function sanitizeFileName(fileName) {
   }
 }
 
-// Función para crear resultados de emergencia
 function createEmergencyDownloadResults(urls, errorType, errorMessage) {
   console.warn(`[DOWNLOAD] Creando resultados de emergencia: ${errorType}`);
   
@@ -466,7 +443,6 @@ function createEmergencyDownloadResults(urls, errorType, errorMessage) {
   }));
 }
 
-// Función para crear resultados de error por autenticación
 function createDownloadErrorResults(urls, errorType, errorMessage) {
   console.warn(`[DOWNLOAD] Creando resultados de error: ${errorType}`);
   
@@ -475,7 +451,6 @@ function createDownloadErrorResults(urls, errorType, errorMessage) {
     try {
       fileId = extractFileIdFromUrl(url);
     } catch (fileIdError) {
-      // fileId permanece null
     }
     
     return {
@@ -490,7 +465,6 @@ function createDownloadErrorResults(urls, errorType, errorMessage) {
   });
 }
 
-// Función para truncar URLs para logging
 function truncateUrl(url) {
   try {
     if (!url) return 'URL_NULL';

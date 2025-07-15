@@ -5,8 +5,7 @@ const { extractDataTyT } = require('./extractDataDocuments');
 
 async function processDocuments(inputData, downloadedFiles, documentUrls) {
   console.log('[PROCESS] Iniciando procesamiento robusto de documentos');
-  
-  // Crear estructura de salida garantizada
+
   let output;
   try {
     output = createSafeOutputStructure(inputData);
@@ -15,7 +14,6 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     output = createEmergencyOutputStructure(inputData);
   }
 
-  // Crear mapa de documentos con manejo de errores
   let documentMap = {};
   try {
     documentMap = createDocumentMap(downloadedFiles, documentUrls);
@@ -25,7 +23,6 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     documentMap = {}; // Continuar con mapa vacío
   }
 
-  // Procesar todos los documentos con manejo robusto individual
   const processingPromises = [
     safeProcessDocumentType(documentMap, 'cedula', output, 'FotocopiaDocumento', inputData),
     safeProcessDocumentType(documentMap, 'diploma_bachiller', output, 'DiplomayActaGradoBachiller', inputData),
@@ -39,18 +36,15 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     safeProcessDocumentType(documentMap, 'acta_homologacion', output, 'Acta_Homologacion', inputData),
   ];
 
-  // Ejecutar todos los procesamientos con manejo de errores global
   try {
     console.log('[PROCESS] Ejecutando procesamiento en paralelo de 10 tipos de documentos');
     const results = await Promise.allSettled(processingPromises);
-    
-    // Analizar resultados
+
     const successful = results.filter(r => r.status === 'fulfilled').length;
     const failed = results.filter(r => r.status === 'rejected').length;
     
     console.log(`[PROCESS] Resultados del procesamiento: ${successful} exitosos, ${failed} fallidos`);
-    
-    // Log errores específicos
+
     results.forEach((result, index) => {
       if (result.status === 'rejected') {
         const docTypes = ['cedula', 'diploma_bachiller', 'diploma_tecnico', 'diploma_tecnologo', 
@@ -61,16 +55,13 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
     
   } catch (parallelError) {
     console.error('[PROCESS] Error crítico en procesamiento paralelo:', parallelError.message);
-    // El output ya tiene valores por defecto, así que continuamos
   }
 
-  // Verificar integridad del resultado final
   try {
     validateOutputIntegrity(output);
     console.log('[PROCESS] ✓ Integridad del resultado verificada');
   } catch (integrityError) {
     console.error('[PROCESS] Error de integridad:', integrityError.message);
-    // Reparar campos faltantes
     repairOutputStructure(output, inputData);
   }
 
@@ -78,7 +69,6 @@ async function processDocuments(inputData, downloadedFiles, documentUrls) {
   return output;
 }
 
-// Función para crear estructura de salida segura
 function createSafeOutputStructure(inputData) {
   try {
     return {
@@ -116,7 +106,6 @@ function createSafeOutputStructure(inputData) {
   }
 }
 
-// Función de emergencia para crear estructura mínima
 function createEmergencyOutputStructure(inputData) {
   const safeId = (inputData && typeof inputData === 'object' && inputData.ID) ? String(inputData.ID) : 'emergency';
   
@@ -152,7 +141,6 @@ function createEmergencyOutputStructure(inputData) {
   };
 }
 
-// Función para copiar valores de forma segura
 function safeCopy(value, defaultValue) {
   try {
     if (value === null || value === undefined) {
@@ -167,7 +155,6 @@ function safeCopy(value, defaultValue) {
   }
 }
 
-// Función para crear mapa de documentos de forma segura
 function createDocumentMap(downloadedFiles, documentUrls) {
   const documentMap = {};
   
@@ -206,12 +193,10 @@ function createDocumentMap(downloadedFiles, documentUrls) {
   return documentMap;
 }
 
-// Función de procesamiento seguro para cada tipo de documento
 async function safeProcessDocumentType(documentMap, docType, output, outputField, inputData) {
   try {
     console.log(`[PROCESS] Procesando documento tipo: ${docType}`);
-    
-    // Verificar que output y outputField existan
+
     if (!output || typeof output !== 'object') {
       throw new Error(`Output object invalid for ${docType}`);
     }
@@ -224,8 +209,7 @@ async function safeProcessDocumentType(documentMap, docType, output, outputField
     
   } catch (error) {
     console.error(`[PROCESS] Error crítico procesando ${docType}:`, error.message);
-    
-    // Garantizar que el campo siempre tenga un valor
+
     try {
       if (output && outputField) {
         output[outputField] = `Error crítico en procesamiento - Revision Manual (${error.message.substring(0, 50)})`;
@@ -236,29 +220,24 @@ async function safeProcessDocumentType(documentMap, docType, output, outputField
   }
 }
 
-// Función original de procesamiento con manejo de errores mejorado
 async function processDocumentType(documentMap, docType, output, outputField, inputData){
   try {
     const file = documentMap[docType];
-    
-    // Caso 1: No hay archivo para este tipo de documento
+
     if (!file) {
       console.log(`[PROCESS] No se encontró archivo para tipo: ${docType}`);
       output[outputField] = "Documento no adjunto";
       return;
     }
 
-    // Caso 2: El archivo falló en la descarga
     if (file.status === 'error') {
       console.error(`[PROCESS] Error en descarga para ${docType}: ${file.error}`);
       output[outputField] = determineErrorMessage(file.error);
       return;
     }
 
-    // Caso 3: Archivo descargado exitosamente, proceder con el procesamiento
     console.log(`[PROCESS] Archivo encontrado: ${file.fileName} (${formatBytes(file.size)})`);
 
-    // Extracción de texto con manejo de errores
     let extractedText = '';
     try {
       extractedText = await extractTextFromDocument(file.path, docType);
@@ -269,7 +248,6 @@ async function processDocumentType(documentMap, docType, output, outputField, in
       return;
     }
 
-    // Validación con diccionario con manejo de errores
     let isValid = false;
     try {
       const dictionary = await getDictionaryForDocumentType(docType);
@@ -282,7 +260,6 @@ async function processDocumentType(documentMap, docType, output, outputField, in
     }
 
     if (isValid) {
-      // Procesamiento especial para prueba TyT con manejo robusto
       if (docType === 'prueba_tt') {
         await safeProcessTyTDocument(extractedText, output, inputData);
       }
@@ -301,14 +278,12 @@ async function processDocumentType(documentMap, docType, output, outputField, in
   }
 }
 
-// Función para procesar documentos TyT de forma segura
 async function safeProcessTyTDocument(extractedText, output, inputData) {
   try {
     console.log(`[PROCESS] Extrayendo datos específicos de TyT`);
     
     const dataTyT = await extractDataTyT(extractedText);
-    
-    // Verificar si hay datos válidos extraídos
+
     const hasValidData = dataTyT.registroEK || dataTyT.numDocumento || 
                         dataTyT.fechaPresentacion || dataTyT.programa || dataTyT.institucion;
     
@@ -317,7 +292,6 @@ async function safeProcessTyTDocument(extractedText, output, inputData) {
       return;
     }
 
-    // Asignar datos extraídos con valores seguros
     output.EK = safeCopy(dataTyT.registroEK, 'Extraccion Manual');
     output.Num_Documento_Extraido = safeCopy(dataTyT.numDocumento, 'Extraccion Manual');
     output.Fecha_Presentacion_Extraida = safeCopy(dataTyT.fechaPresentacion, 'Extraccion Manual');
@@ -332,7 +306,6 @@ async function safeProcessTyTDocument(extractedText, output, inputData) {
       institucion: dataTyT.institucion ? dataTyT.institucion.substring(0, 50) + '...' : 'N/A'
     });
 
-    // Validación de número de documento con manejo de errores
     try {
       const inputDocNumber = safeCopy(inputData?.Numero_de_Documento, '');
       const extractedDocNumber = safeCopy(dataTyT.numDocumento, '');
@@ -349,7 +322,6 @@ async function safeProcessTyTDocument(extractedText, output, inputData) {
       output.Num_Doc_Valido = 'Error en validación';
     }
 
-    // Validación de institución CUN con manejo de errores
     try {
       if (dataTyT.institucion) {
         const dictionaryCUN = await getDictionaryForDocumentType('cun_institutions');
@@ -377,7 +349,6 @@ async function safeProcessTyTDocument(extractedText, output, inputData) {
   }
 }
 
-// Función para establecer extracción manual en TyT
 function setTyTManualExtraction(output, reason) {
   output.EK = 'Extraccion Manual';
   output.Num_Documento_Extraido = 'Extraccion Manual';
@@ -390,7 +361,6 @@ function setTyTManualExtraction(output, reason) {
   console.log(`[PROCESS] TyT marcado para extracción manual: ${reason}`);
 }
 
-// Función para determinar mensaje de error específico
 function determineErrorMessage(errorString) {
   try {
     const error = String(errorString).toLowerCase();
@@ -423,7 +393,6 @@ function determineErrorMessage(errorString) {
   }
 }
 
-// Función para validar integridad del resultado final
 function validateOutputIntegrity(output) {
   const requiredFields = [
     'ID', 'NombreCompleto', 'TipoDocumento', 'NumeroDocumento', 'Modalidad',
@@ -442,8 +411,7 @@ function validateOutputIntegrity(output) {
   if (missingFields.length > 0) {
     throw new Error(`Campos faltantes en output: ${missingFields.join(', ')}`);
   }
-  
-  // Verificar que no haya valores null o undefined
+
   for (const [key, value] of Object.entries(output)) {
     if (value === null || value === undefined) {
       throw new Error(`Campo ${key} tiene valor null/undefined`);
@@ -451,7 +419,6 @@ function validateOutputIntegrity(output) {
   }
 }
 
-// Función para reparar estructura de output
 function repairOutputStructure(output, inputData) {
   console.log('[PROCESS] Reparando estructura de output...');
   
@@ -491,8 +458,7 @@ function repairOutputStructure(output, inputData) {
       console.log(`[PROCESS] Campo ${key} reparado con valor: ${defaultValue}`);
     }
   }
-  
-  // Intentar usar datos de entrada si están disponibles
+
   try {
     if (inputData && typeof inputData === 'object') {
       if (inputData.ID && (!output.ID || output.ID === 'repair_needed')) {
@@ -501,7 +467,6 @@ function repairOutputStructure(output, inputData) {
       if (inputData.Nombre_completo && output.NombreCompleto === 'Campo reparado') {
         output.NombreCompleto = safeCopy(inputData.Nombre_completo, 'Campo reparado');
       }
-      // Agregar más reparaciones según sea necesario
     }
   } catch (repairError) {
     console.error('[PROCESS] Error durante reparación:', repairError.message);
