@@ -164,14 +164,6 @@ async function processDocuments(inputData, downloadedFiles, documentUrls, s3Proc
   
   return {
     ...output,
-    processing_summary: {
-      total_documents: totalProcessed,
-      successful: totalProcessed - totalErrors,
-      errors: totalErrors,
-      s3_processing_id: s3ProcessingId,
-      optimization_used: true,
-      processing_time_optimized: true
-    }
   };
 }
 

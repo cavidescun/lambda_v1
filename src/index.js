@@ -64,7 +64,7 @@ exports.handler = async (event, context) => {
 
     try {
       s3ProcessingId = await initializeS3Processing(
-        requestBody.ID || "unknown",
+        (requestBody.ID).toString() || "unknown",
       );
       console.log(`[MAIN] ✓ S3 processing inicializado: ${s3ProcessingId}`);
     } catch (s3InitError) {

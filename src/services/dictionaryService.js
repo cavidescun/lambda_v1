@@ -17,52 +17,6 @@ const dictionaryMapping = {
   cun_institutions: "DiccionarioCUN.txt",
 };
 
-const fallbackDictionaries = {
-  cedula: [
-    "cedula", "documento", "identificacion", "cc", "c.c", "numero",
-    "ciudadania", "identidad", "documento identidad", "cedula ciudadania"
-  ],
-  diploma_bachiller: [
-    "bachiller", "diploma", "acta", "grado", "graduacion", "titulo",
-    "bachillerato", "secundaria", "educacion media", "colegio"
-  ],
-  diploma_tecnico: [
-    "tecnico", "diploma", "acta", "grado", "graduacion", "titulo",
-    "tecnica", "instituto", "formacion tecnica"
-  ],
-  diploma_tecnologo: [
-    "tecnologo", "diploma", "acta", "grado", "graduacion", "titulo",
-    "tecnologia", "instituto", "formacion tecnologica"
-  ],
-  titulo_profesional: [
-    "profesional", "titulo", "diploma", "acta", "grado", "graduacion",
-    "universidad", "pregrado", "licenciatura"
-  ],
-  prueba_tt: [
-    "saber", "pro", "icfes", "prueba", "examen", "test", "evaluacion",
-    "competencias", "resultados", "puntaje"
-  ],
-  icfes: [
-    "icfes", "saber", "11", "once", "prueba", "examen", "test",
-    "evaluacion", "resultados", "puntaje"
-  ],
-  recibo_pago: [
-   "860401734", "860401734-9"
-  ],
-  encuesta_m0: [
-    "encuesta", "seguimiento", "momento", "evaluacion", "formulario",
-    "cuestionario", "respuesta", "valoracion"
-  ],
-  acta_homologacion: [
-    "homologacion", "acta", "reconocimiento", "validacion", "equivalencia",
-    "convalidacion", "transferencia", "creditos"
-  ],
-  cun_institutions: [
-    "corporacion unificada nacional", "cun", "educacion superior",
-    "universidad", "institucion", "centro educativo"
-  ]
-};
-
 async function getDictionaryForDocumentType(documentType) {
   console.log(`[DICT] Obteniendo diccionario para tipo: ${documentType}`);
   
@@ -70,255 +24,239 @@ async function getDictionaryForDocumentType(documentType) {
 
   if (!dictionaryFileName) {
     console.warn(`[DICT] No se encontró mapeo de diccionario para el tipo: ${documentType}`);
-    
-    // Usar diccionario de fallback si existe
-    if (fallbackDictionaries[documentType]) {
-      console.log(`[DICT] Usando diccionario de fallback para ${documentType}`);
-      return fallbackDictionaries[documentType];
-    }
-    
     return [];
   }
-
+  
   try {
     const dictionary = await loadDictionary(dictionaryFileName);
     
-    // Si el diccionario está vacío, usar fallback
-    if (!dictionary || dictionary.length === 0) {
-      console.warn(`[DICT] Diccionario ${dictionaryFileName} vacío, usando fallback`);
-      return fallbackDictionaries[documentType] || [];
-    }
-    
-    // Si el diccionario es muy pequeño, combinarlo con fallback
-    if (dictionary.length <= 2) {
+    // CORECCIÓN: Validar y mejorar diccionarios pequeños
+    if (dictionary.length < 5) {
       console.warn(`[DICT] Diccionario ${dictionaryFileName} muy pequeño (${dictionary.length} entradas), combinando con fallback`);
-      const combinedDictionary = [...dictionary, ...(fallbackDictionaries[documentType] || [])];
-      return [...new Set(combinedDictionary)]; // Eliminar duplicados
+      return await enhanceSmallDictionary(documentType, dictionary);
     }
     
     return dictionary;
   } catch (error) {
     console.error(`[DICT] Error cargando diccionario ${dictionaryFileName}:`, error.message);
-    
-    // En caso de error, usar fallback
-    if (fallbackDictionaries[documentType]) {
-      console.log(`[DICT] Usando diccionario de fallback debido a error`);
-      return fallbackDictionaries[documentType];
-    }
-    
-    return [];
+    return await getFallbackDictionary(documentType);
   }
 }
 
 async function loadDictionary(dictionaryFileName) {
+  console.log(`[DICT] Intentando cargar diccionario: ${dictionaryFileName}`);
+  
+  // Verificar si ya está en caché
+  if (dictionaryCache[dictionaryFileName]) {
+    console.log(`[DICT] Diccionario encontrado en caché: ${dictionaryFileName}`);
+    return dictionaryCache[dictionaryFileName];
+  }
+
   try {
-    // Verificar si ya está en cache
-    if (dictionaryCache[dictionaryFileName]) {
-      console.log(`[DICT] Usando diccionario desde cache: ${dictionaryFileName}`);
-      return dictionaryCache[dictionaryFileName];
-    }
-
-    const dictionaryPath = path.join(
-      process.cwd(),
-      "dictionaries",
-      dictionaryFileName
-    );
-
-    console.log(`[DICT] Intentando cargar diccionario: ${dictionaryPath}`);
-
-    // Verificar si el archivo existe
+    const dictionaryPath = path.join(process.cwd(), "dictionaries", dictionaryFileName);
+    
+    // Verificar que el archivo existe
     const exists = await fs.pathExists(dictionaryPath);
     if (!exists) {
-      console.error(`[DICT] Archivo de diccionario no encontrado: ${dictionaryPath}`);
-      return [];
+      throw new Error(`Archivo de diccionario no encontrado: ${dictionaryPath}`);
     }
-
-    // Leer el archivo
+    
     const content = await fs.readFile(dictionaryPath, "utf8");
     
     if (!content || content.trim().length === 0) {
-      console.error(`[DICT] Archivo de diccionario vacío: ${dictionaryFileName}`);
-      return [];
+      throw new Error(`Diccionario está vacío: ${dictionaryFileName}`);
     }
-
-    // Procesar el contenido
+    
     const keywords = content
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
-      .filter((line) => !line.startsWith("#")) // Filtrar comentarios
-      .filter((line) => !line.startsWith("//")) // Filtrar comentarios
-      .map((line) => line.toLowerCase()); // Normalizar a minúsculas
+      // Filtrar comentarios que empiecen con # o //
+      .filter((line) => !line.startsWith('#') && !line.startsWith('//'))
+      // Remover duplicados
+      .filter((value, index, self) => self.indexOf(value) === index);
 
     if (keywords.length === 0) {
-      console.error(`[DICT] No se encontraron palabras clave válidas en: ${dictionaryFileName}`);
-      return [];
+      throw new Error(`No se encontraron palabras clave válidas en: ${dictionaryFileName}`);
     }
 
-    // Remover duplicados
-    const uniqueKeywords = [...new Set(keywords)];
+    // Guardar en caché
+    dictionaryCache[dictionaryFileName] = keywords;
     
-    // Cachear el resultado
-    dictionaryCache[dictionaryFileName] = uniqueKeywords;
+    console.log(`[DICT] Diccionario cargado exitosamente: ${dictionaryFileName} (${keywords.length} palabras únicas)`);
     
-    console.log(`[DICT] Diccionario cargado exitosamente: ${dictionaryFileName} (${uniqueKeywords.length} palabras únicas)`);
-    
-    return uniqueKeywords;
-    
+    return keywords;
   } catch (error) {
-    console.error(`[DICT] Error cargando diccionario ${dictionaryFileName}:`, error.message);
-    
-    // Limpiar cache en caso de error
-    if (dictionaryCache[dictionaryFileName]) {
-      delete dictionaryCache[dictionaryFileName];
-    }
-    
+    console.error(`[DICT] Error cargando ${dictionaryFileName}:`, error.message);
     throw error;
   }
 }
 
-async function validateDictionaryFile(dictionaryFileName) {
-  try {
-    const dictionaryPath = path.join(
-      process.cwd(),
-      "dictionaries",
-      dictionaryFileName
-    );
-
-    const exists = await fs.pathExists(dictionaryPath);
-    if (!exists) {
-      return {
-        isValid: false,
-        error: `Archivo no encontrado: ${dictionaryPath}`,
-        path: dictionaryPath
-      };
-    }
-
-    const stats = await fs.stat(dictionaryPath);
-    if (stats.size === 0) {
-      return {
-        isValid: false,
-        error: `Archivo vacío: ${dictionaryFileName}`,
-        path: dictionaryPath,
-        size: stats.size
-      };
-    }
-
-    const content = await fs.readFile(dictionaryPath, "utf8");
-    const lines = content.split("\n").filter(line => line.trim().length > 0);
-    
-    return {
-      isValid: true,
-      path: dictionaryPath,
-      size: stats.size,
-      lineCount: lines.length,
-      validLines: lines.filter(line => !line.startsWith("#") && !line.startsWith("//")).length
-    };
-    
-  } catch (error) {
-    return {
-      isValid: false,
-      error: error.message,
-      path: dictionaryFileName
-    };
-  }
+// NUEVA FUNCIÓN: Mejorar diccionarios pequeños con palabras de fallback
+async function enhanceSmallDictionary(documentType, originalDictionary) {
+  console.log(`[DICT] Mejorando diccionario pequeño para: ${documentType}`);
+  
+  const fallbackWords = getFallbackWordsForType(documentType);
+  const enhanced = [...new Set([...originalDictionary, ...fallbackWords])];
+  
+  console.log(`[DICT] Diccionario mejorado: ${originalDictionary.length} -> ${enhanced.length} palabras`);
+  
+  return enhanced;
 }
 
-async function validateAllDictionaries() {
-  console.log(`[DICT] Validando todos los diccionarios...`);
+// NUEVA FUNCIÓN: Obtener diccionario de emergencia
+async function getFallbackDictionary(documentType) {
+  console.warn(`[DICT] Usando diccionario de fallback para: ${documentType}`);
   
-  const results = {};
+  const fallbackWords = getFallbackWordsForType(documentType);
   
-  for (const [docType, fileName] of Object.entries(dictionaryMapping)) {
+  if (fallbackWords.length === 0) {
+    console.error(`[DICT] No hay palabras de fallback para: ${documentType}`);
+    return ['documento', 'válido', 'información']; // Fallback mínimo
+  }
+  
+  return fallbackWords;
+}
+
+// NUEVA FUNCIÓN: Palabras de fallback por tipo de documento
+function getFallbackWordsForType(documentType) {
+  const fallbackMappings = {
+    cedula: [
+      'cédula', 'cedula', 'ciudadanía', 'ciudadania', 'documento', 'identidad',
+      'registrador', 'registro', 'civil', 'estado', 'nacional',
+      'república', 'republica', 'colombia', 'número', 'numero'
+    ],
+    diploma_bachiller: [
+      'bachiller', 'académico', 'academico', 'media', 'educación', 'educacion',
+      'superior', 'título', 'titulo', 'diploma', 'grado', 'certificado',
+      'institucional', 'colegio', 'instituto'
+    ],
+    diploma_tecnico: [
+      'técnico', 'tecnico', 'tecnología', 'tecnologia', 'formación', 'formacion',
+      'profesional', 'diploma', 'certificado', 'título', 'titulo', 'grado'
+    ],
+    diploma_tecnologo: [
+      'tecnólogo', 'tecnologo', 'tecnología', 'tecnologia', 'superior',
+      'formación', 'formacion', 'profesional', 'diploma', 'título', 'titulo', 'grado'
+    ],
+    titulo_profesional: [
+      'profesional', 'universitario', 'superior', 'grado', 'título', 'titulo',
+      'diploma', 'educación', 'educacion', 'universidad', 'facultad'
+    ],
+    prueba_tt: [
+      'transición', 'transicion', 'trabajo', 'saber', 'icfes', 'evaluación', 'evaluacion',
+      'competencias', 'prueba', 'examen', 'resultado', 'puntaje'
+    ],
+    icfes: [
+      'icfes', 'saber', 'once', '11', 'evaluación', 'evaluacion', 'prueba',
+      'examen', 'resultado', 'puntaje', 'competencias', 'educación', 'educacion'
+    ],
+    recibo_pago: [
+      'pago', 'recibo', 'derechos', 'grado', 'valor', 'cancelado', 'pagado',
+      'factura', 'comprobante', 'transacción', 'transaccion'
+    ],
+    encuesta_m0: [
+      'encuesta', 'seguimiento', 'momento', 'observatorio', 'laboral',
+      'graduados', 'programa', 'formación', 'formacion', 'empleabilidad'
+    ],
+    acta_homologacion: [
+      'homologación', 'homologacion', 'reconocimiento', 'convalidación', 'convalidacion',
+      'equivalencia', 'materias', 'asignaturas', 'créditos', 'creditos'
+    ],
+    cun_institutions: [
+      'corporación', 'corporacion', 'unificada', 'nacional', 'cun',
+      'educación', 'educacion', 'superior', 'universidad', 'institución', 'institucion'
+    ]
+  };
+  
+  return fallbackMappings[documentType] || [];
+}
+
+// NUEVA FUNCIÓN: Validar diccionario cargado
+function validateDictionary(dictionary, dictionaryName) {
+  if (!Array.isArray(dictionary)) {
+    throw new Error(`Diccionario ${dictionaryName} no es un array`);
+  }
+  
+  if (dictionary.length === 0) {
+    throw new Error(`Diccionario ${dictionaryName} está vacío`);
+  }
+  
+  const validWords = dictionary.filter(word => 
+    word && typeof word === 'string' && word.trim().length > 0
+  );
+  
+  if (validWords.length === 0) {
+    throw new Error(`Diccionario ${dictionaryName} no contiene palabras válidas`);
+  }
+  
+  const percentage = (validWords.length / dictionary.length) * 100;
+  
+  if (percentage < 80) {
+    console.warn(`[DICT] Diccionario ${dictionaryName} tiene solo ${percentage.toFixed(1)}% de entradas válidas`);
+  }
+  
+  return {
+    isValid: true,
+    totalWords: dictionary.length,
+    validWords: validWords.length,
+    validPercentage: percentage
+  };
+}
+
+// NUEVA FUNCIÓN: Precargar diccionarios al inicio
+async function preloadDictionaries() {
+  console.log(`[DICT] Precargando diccionarios...`);
+  
+  const loadPromises = Object.entries(dictionaryMapping).map(async ([type, fileName]) => {
     try {
-      const validation = await validateDictionaryFile(fileName);
-      results[docType] = {
-        fileName,
-        ...validation
-      };
-      
-      if (validation.isValid) {
-        console.log(`[DICT] ✓ ${docType}: ${fileName} (${validation.validLines} líneas válidas)`);
-      } else {
-        console.error(`[DICT] ✗ ${docType}: ${fileName} - ${validation.error}`);
-      }
+      await loadDictionary(fileName);
+      console.log(`[DICT] ✓ Precargado: ${type}`);
     } catch (error) {
-      results[docType] = {
-        fileName,
-        isValid: false,
-        error: error.message
-      };
-      console.error(`[DICT] ✗ ${docType}: Error validando ${fileName} - ${error.message}`);
+      console.warn(`[DICT] ⚠️ Error precargando ${type}: ${error.message}`);
     }
-  }
-  
-  const totalDictionaries = Object.keys(results).length;
-  const validDictionaries = Object.values(results).filter(r => r.isValid).length;
-  const invalidDictionaries = totalDictionaries - validDictionaries;
-  
-  console.log(`[DICT] Resumen de validación: ${validDictionaries}/${totalDictionaries} diccionarios válidos`);
-  
-  if (invalidDictionaries > 0) {
-    console.warn(`[DICT] ${invalidDictionaries} diccionarios tienen problemas - se usarán fallbacks`);
-  }
-  
-  return {
-    total: totalDictionaries,
-    valid: validDictionaries,
-    invalid: invalidDictionaries,
-    results
-  };
-}
-
-function clearDictionaryCache() {
-  const cachedCount = Object.keys(dictionaryCache).length;
-  Object.keys(dictionaryCache).forEach(key => {
-    delete dictionaryCache[key];
   });
-  console.log(`[DICT] Cache limpiado: ${cachedCount} diccionarios removidos`);
+  
+  await Promise.allSettled(loadPromises);
+  console.log(`[DICT] Precarga completada`);
 }
 
-function getDictionaryCacheStatus() {
-  const cached = Object.keys(dictionaryCache);
-  return {
-    cachedCount: cached.length,
-    cachedDictionaries: cached,
-    totalMappings: Object.keys(dictionaryMapping).length
-  };
+// NUEVA FUNCIÓN: Limpiar caché de diccionarios
+function clearDictionaryCache() {
+  const cacheSize = Object.keys(dictionaryCache).length;
+  Object.keys(dictionaryCache).forEach(key => delete dictionaryCache[key]);
+  console.log(`[DICT] Caché limpiado: ${cacheSize} diccionarios removidos`);
 }
 
-// Función para obtener estadísticas de un diccionario específico
-async function getDictionaryStats(documentType) {
-  try {
-    const dictionary = await getDictionaryForDocumentType(documentType);
-    const fileName = dictionaryMapping[documentType];
-    
-    return {
-      documentType,
+// NUEVA FUNCIÓN: Obtener estadísticas de diccionarios
+function getDictionaryStats() {
+  const stats = {};
+  
+  for (const [type, fileName] of Object.entries(dictionaryMapping)) {
+    const dictionary = dictionaryCache[fileName];
+    stats[type] = {
       fileName,
-      wordCount: dictionary.length,
-      averageWordLength: dictionary.reduce((sum, word) => sum + word.length, 0) / dictionary.length,
-      uniqueWords: dictionary.length,
-      longestWord: dictionary.reduce((longest, word) => word.length > longest.length ? word : longest, ''),
-      shortestWord: dictionary.reduce((shortest, word) => word.length < shortest.length ? word : shortest, dictionary[0] || ''),
-      usingFallback: !dictionaryMapping[documentType] || dictionaryCache[fileName] === undefined
-    };
-  } catch (error) {
-    return {
-      documentType,
-      error: error.message,
-      wordCount: 0,
-      usingFallback: true
+      loaded: !!dictionary,
+      wordCount: dictionary ? dictionary.length : 0,
+      cached: !!dictionary
     };
   }
+  
+  return {
+    totalTypes: Object.keys(dictionaryMapping).length,
+    loadedTypes: Object.values(stats).filter(s => s.loaded).length,
+    totalCachedWords: Object.values(dictionaryCache).reduce((sum, dict) => sum + dict.length, 0),
+    details: stats
+  };
 }
 
 module.exports = {
   getDictionaryForDocumentType,
   loadDictionary,
-  validateDictionaryFile,
-  validateAllDictionaries,
+  enhanceSmallDictionary,
+  getFallbackDictionary,
+  validateDictionary,
+  preloadDictionaries,
   clearDictionaryCache,
-  getDictionaryCacheStatus,
   getDictionaryStats
 };

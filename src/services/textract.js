@@ -1,7 +1,7 @@
 const AWS = require("aws-sdk");
 const fs = require("fs-extra");
 const path = require("path");
-const { uploadToS3, processMultiPagePDF, updateProcessingMetadata } = require("./s3Service");
+const { uploadToS3, updateProcessingMetadata } = require("./s3Service");
 
 const textract = new AWS.Textract({
   httpOptions: {
@@ -15,12 +15,17 @@ const textract = new AWS.Textract({
 });
 
 const PROCESSING_CONFIG = {
-  maxSyncFileSize: 5 * 1024 * 1024,
+  // Aumentar límite para procesar más archivos síncronamente
+  maxSyncFileSize: 10 * 1024 * 1024, // 10MB en lugar de 5MB
   maxFileSize: 500 * 1024 * 1024,
-  useAsyncForPDF: true,
+  // DESACTIVAR procesamiento asíncrono hasta que se configure correctamente
+  useAsyncForPDF: false,
   syncTimeout: 45000,
   asyncPollInterval: 2000,
-  asyncMaxWaitTime: 300000
+  asyncMaxWaitTime: 300000,
+  // Configuración para dividir PDFs grandes
+  enablePdfSplitting: true,
+  maxPagesPerSplit: 3
 };
 
 async function extractTextFromDocument(filePath, documentType, processingId = null) {
@@ -32,7 +37,8 @@ async function extractTextFromDocument(filePath, documentType, processingId = nu
     const fileStats = await getFileStats(filePath);
     console.log(`[TEXTRACT-OPT] Archivo: ${fileStats.name} (${fileStats.sizeFormatted})`);
 
-    const strategy = determineProcessingStrategy(filePath, fileStats, documentType, processingId);
+    // Estrategia corregida: priorizar sync y usar splitting para PDFs grandes
+    const strategy = determineProcessingStrategy(filePath, fileStats, documentType);
     console.log(`[TEXTRACT-OPT] Estrategia de procesamiento: ${strategy.type}`);
 
     let extractionResult;
@@ -42,17 +48,13 @@ async function extractTextFromDocument(filePath, documentType, processingId = nu
         extractionResult = await processSyncDocument(filePath, documentType);
         break;
         
-      case 'async-s3':
-        if (!processingId) {
-          console.warn(`[TEXTRACT-OPT] No hay processingId para async, usando sync con manejo de errores`);
-          extractionResult = await processSyncDocumentWithFallback(filePath, documentType);
-        } else {
-          extractionResult = await processAsyncS3Document(filePath, documentType, processingId);
-        }
+      case 'sync-split':
+        extractionResult = await processSyncWithSplitting(filePath, documentType);
         break;
         
-      case 'hybrid':
-        extractionResult = await processHybridDocument(filePath, documentType, processingId);
+      case 'fallback-sync':
+        // Intentar sync forzado incluso para archivos grandes
+        extractionResult = await processSyncDocumentForced(filePath, documentType);
         break;
         
       default:
@@ -74,208 +76,30 @@ async function extractTextFromDocument(filePath, documentType, processingId = nu
   }
 }
 
-async function processHybridDocument(filePath, documentType, processingId) {
-  console.log(`[TEXTRACT-OPT] Iniciando procesamiento híbrido`);
-  
-  try {
-    // Primero intentar sincrónico
-    return await processSyncDocument(filePath, documentType);
-  } catch (syncError) {
-    console.warn(`[TEXTRACT-OPT] Sync falló, evaluando opciones: ${syncError.message}`);
-    
-    // Si hay processingId, intentar async
-    if (processingId) {
-      console.log(`[TEXTRACT-OPT] Intentando async con processingId disponible`);
-      try {
-        return await processAsyncS3Document(filePath, documentType, processingId);
-      } catch (asyncError) {
-        console.error(`[TEXTRACT-OPT] Async también falló: ${asyncError.message}`);
-        throw new Error(`HYBRID_PROCESSING_FAILED: Sync failed (${syncError.message}), Async failed (${asyncError.message})`);
-      }
-    } else {
-      // Sin processingId, intentar sync con manejo especial de errores
-      console.log(`[TEXTRACT-OPT] Sin processingId, usando sync con fallback`);
-      return await processSyncDocumentWithFallback(filePath, documentType);
-    }
-  }
-}
-
-// En src/services/textract.js, función processSyncDocumentWithFallback
-
-async function processSyncDocumentWithFallback(filePath, documentType) {
-  const startTime = Date.now();
-  
-  try {
-    console.log(`[TEXTRACT-OPT] Procesamiento sincrónico con fallback iniciado`);
-
-    const documentBuffer = await fs.readFile(filePath);
-    const originalSize = documentBuffer.length;
-
-    // Verificar si es un PDF válido básico
-    const pdfHeader = documentBuffer.slice(0, 8).toString();
-    if (!pdfHeader.startsWith('%PDF-')) {
-      throw new Error('INVALID_PDF_HEADER: Archivo no es un PDF válido');
-    }
-
-    // Si el archivo es muy grande, intentar con límite más alto pero aún sincrónico
-    const maxSizeForFallback = 15 * 1024 * 1024; // 15MB en lugar de 10MB
-    
-    if (originalSize > maxSizeForFallback) {
-      throw new Error(`FILE_TOO_LARGE_FOR_SYNC_FALLBACK: ${formatBytes(originalSize)} > ${formatBytes(maxSizeForFallback)}`);
-    }
-
-    const params = {
-      Document: {
-        Bytes: documentBuffer,
-      },
-    };
-
-    // Intentar con timeout más largo y mejor manejo de errores
-    const extendedTimeout = 90000; // 90 segundos
-    const textractPromise = textract.detectDocumentText(params).promise();
-    
-    let result;
-    try {
-      result = await Promise.race([
-        textractPromise,
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('TEXTRACT_SYNC_TIMEOUT_EXTENDED')), extendedTimeout)
-        )
-      ]);
-    } catch (textractError) {
-      // Manejo específico de errores de Textract
-      if (textractError.message.includes('unsupported document format')) {
-        console.log(`[TEXTRACT-OPT] PDF con formato no soportado, intentando estrategias alternativas`);
-        
-        const fileExtension = path.extname(filePath).toLowerCase();
-        const fileName = path.basename(filePath);
-        
-        // Generar un texto más descriptivo basado en el nombre del archivo
-        let alternativeText = `DOCUMENTO_PDF_NO_PROCESABLE: ${fileName}`;
-        
-        // Intentar extraer información del nombre del archivo
-        if (fileName.toLowerCase().includes('bachiller')) {
-          alternativeText += ' - Posible documento de bachiller';
-        } else if (fileName.toLowerCase().includes('tecno')) {
-          alternativeText += ' - Posible documento tecnológico';
-        } else if (fileName.toLowerCase().includes('pago') || fileName.toLowerCase().includes('recibo')) {
-          alternativeText += ' - Posible recibo de pago';
-        } else if (fileName.toLowerCase().includes('encuesta')) {
-          alternativeText += ' - Posible encuesta';
-        } else if (fileName.toLowerCase().includes('cedula') || fileName.match(/\d{6,12}/)) {
-          alternativeText += ' - Posible documento de identidad';
-        }
-        
-        return {
-          text: alternativeText,
-          method: 'filename-fallback',
-          processingTime: Date.now() - startTime,
-          metadata: {
-            error: 'PDF no procesable por Textract',
-            fileType: fileExtension,
-            fileName: fileName,
-            originalSize
-          }
-        };
-      }
-      throw textractError;
-    }
-
-    const extractedText = extractTextFromTextractResult(result);
-    const processingTime = Date.now() - startTime;
-
-    console.log(`[TEXTRACT-OPT] ✓ Sync fallback completado: ${extractedText.length} caracteres en ${processingTime}ms`);
-
-    return {
-      text: extractedText,
-      method: 'sync-fallback',
-      processingTime,
-      metadata: {
-        blockCount: result.Blocks?.length || 0,
-        documentMetadata: result.DocumentMetadata,
-        originalSize
-      }
-    };
-
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-    console.error(`[TEXTRACT-OPT] Error en procesamiento sync fallback después de ${processingTime}ms:`, error.message);
-    
-    // Estrategia final: generar texto basado en el nombre del archivo y tipo de documento
-    const fileName = path.basename(filePath);
-    let fallbackText = `DOCUMENTO_NO_PROCESABLE: ${fileName}`;
-    
-    // Agregar contexto basado en el tipo de documento esperado
-    const documentTypeHints = {
-      'cedula': 'documento de identidad',
-      'diploma_bachiller': 'diploma de bachiller',
-      'diploma_tecnico': 'diploma técnico',
-      'diploma_tecnologo': 'diploma tecnológico',
-      'titulo_profesional': 'título profesional',
-      'prueba_tt': 'resultados de prueba',
-      'icfes': 'resultados ICFES',
-      'recibo_pago': 'recibo de pago',
-      'encuesta_m0': 'encuesta',
-      'acta_homologacion': 'acta de homologación'
-    };
-    
-    if (documentTypeHints[documentType]) {
-      fallbackText += ` - Tipo esperado: ${documentTypeHints[documentType]}`;
-    }
-    
-    return {
-      text: fallbackText,
-      method: 'error-fallback-enhanced',
-      processingTime,
-      metadata: {
-        error: error.message,
-        fileType: path.extname(filePath),
-        fileName: fileName,
-        documentType: documentType
-      }
-    };
-  }
-}
-
-function determineProcessingStrategy(filePath, fileStats, documentType, processingId = null) {
+function determineProcessingStrategy(filePath, fileStats, documentType) {
   const fileExtension = path.extname(filePath).toLowerCase();
   const fileSize = fileStats.size;
 
-  // Archivos muy grandes necesitan async obligatoriamente
-  if (fileSize > PROCESSING_CONFIG.maxSyncFileSize) {
-    if (!processingId) {
-      return {
-        type: 'sync',
-        reason: `File size ${fileStats.sizeFormatted} exceeds sync limit but no processingId - will attempt sync with fallback`
-      };
-    }
-    return {
-      type: 'async-s3',
-      reason: `File size ${fileStats.sizeFormatted} exceeds sync limit`
-    };
-  }
-
-  // PDFs prefieren async pero pueden usar hybrid
-  if (fileExtension === '.pdf' && PROCESSING_CONFIG.useAsyncForPDF) {
-    return {
-      type: 'hybrid',
-      reason: 'PDF documents prefer async but will fallback to sync if needed'
-    };
-  }
-
-  // Imágenes pequeñas van directo a sync
-  if (fileSize <= PROCESSING_CONFIG.maxSyncFileSize && 
-      ['.jpg', '.jpeg', '.png', '.tiff', '.tif'].includes(fileExtension)) {
+  // Siempre intentar sync primero para archivos menores a 10MB
+  if (fileSize <= PROCESSING_CONFIG.maxSyncFileSize) {
     return {
       type: 'sync',
-      reason: `Small ${fileExtension} file suitable for sync processing`
+      reason: `File size ${fileStats.sizeFormatted} suitable for sync processing`
     };
   }
 
-  // Todo lo demás usa hybrid
+  // Para PDFs grandes, usar splitting si está habilitado
+  if (fileExtension === '.pdf' && PROCESSING_CONFIG.enablePdfSplitting) {
+    return {
+      type: 'sync-split',
+      reason: `Large PDF will be split and processed in parts`
+    };
+  }
+
+  // Como último recurso, intentar sync forzado
   return {
-    type: 'hybrid',
-    reason: 'Use hybrid strategy for optimal processing'
+    type: 'fallback-sync',
+    reason: 'Fallback to forced sync processing'
   };
 }
 
@@ -327,64 +151,144 @@ async function processSyncDocument(filePath, documentType) {
   }
 }
 
-async function processAsyncS3Document(filePath, documentType, processingId) {
+async function processSyncWithSplitting(filePath, documentType) {
   const startTime = Date.now();
   
   try {
-    console.log(`[TEXTRACT-OPT] Procesamiento asíncrono S3 iniciado`);
+    console.log(`[TEXTRACT-OPT] Iniciando procesamiento con splitting de PDF`);
 
-    const originalFileName = path.basename(filePath);
-    const s3Result = await uploadToS3(filePath, processingId, documentType, originalFileName);
+    // Importar dinámicamente el servicio de splitting
+    const { splitPdfIntoPages } = require('./pdfSplitter');
     
-    console.log(`[TEXTRACT-OPT] ✓ Archivo subido a S3: ${s3Result.key}`);
+    const pageFiles = await splitPdfIntoPages(filePath);
+    console.log(`[TEXTRACT-OPT] PDF dividido en ${pageFiles.length} página(s)`);
 
-    if (processingId) {
-      await updateProcessingMetadata(processingId, documentType, {
-        s3Upload: s3Result,
-        status: 'uploaded_for_analysis'
-      });
+    let combinedText = '';
+    let totalBlocks = 0;
+    let processedPages = 0;
+
+    for (let i = 0; i < pageFiles.length; i++) {
+      const pageFile = pageFiles[i];
+      
+      try {
+        console.log(`[TEXTRACT-OPT] Procesando página ${i + 1}/${pageFiles.length}`);
+        
+        const pageBuffer = await fs.readFile(pageFile);
+        
+        // Verificar tamaño de la página
+        if (pageBuffer.length > PROCESSING_CONFIG.maxSyncFileSize) {
+          console.warn(`[TEXTRACT-OPT] Página ${i + 1} muy grande (${formatBytes(pageBuffer.length)}), saltando`);
+          continue;
+        }
+
+        const params = {
+          Document: {
+            Bytes: pageBuffer,
+          },
+        };
+
+        const result = await textract.detectDocumentText(params).promise();
+        const pageText = extractTextFromTextractResult(result);
+        
+        if (pageText.trim().length > 0) {
+          combinedText += pageText + ' ';
+          totalBlocks += result.Blocks?.length || 0;
+          processedPages++;
+        }
+        
+        console.log(`[TEXTRACT-OPT] ✓ Página ${i + 1} procesada: ${pageText.length} caracteres`);
+        
+        // Pequeña pausa entre páginas
+        if (i < pageFiles.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+      } catch (pageError) {
+        console.error(`[TEXTRACT-OPT] Error procesando página ${i + 1}:`, pageError.message);
+        // Continuar con las siguientes páginas
+      }
     }
 
-    const asyncResult = await processMultiPagePDF(s3Result.key, processingId, documentType);
-    
     const processingTime = Date.now() - startTime;
-
-    if (!asyncResult.success) {
-      throw new Error(`Async processing failed: ${asyncResult.error}`);
+    
+    if (combinedText.trim().length === 0) {
+      throw new Error(`No se pudo extraer texto de ninguna página del PDF`);
     }
 
-    console.log(`[TEXTRACT-OPT] ✓ Async processing completado: ${asyncResult.text.length} caracteres en ${processingTime}ms`);
-    console.log(`[TEXTRACT-OPT] Páginas procesadas: ${asyncResult.metadata.pagesProcessed}, Bloques: ${asyncResult.metadata.totalBlocks}`);
+    console.log(`[TEXTRACT-OPT] ✓ Splitting completado: ${combinedText.length} caracteres de ${processedPages} páginas en ${processingTime}ms`);
 
     return {
-      text: asyncResult.text,
-      method: 'async-s3',
+      text: combinedText.trim(),
+      method: 'sync-split',
       processingTime,
       metadata: {
-        s3Key: s3Result.key,
-        jobId: asyncResult.metadata.jobId,
-        totalBlocks: asyncResult.metadata.totalBlocks,
-        pagesProcessed: asyncResult.metadata.pagesProcessed,
-        textLength: asyncResult.metadata.textLength
+        totalPages: pageFiles.length,
+        processedPages,
+        totalBlocks,
+        averageTextPerPage: Math.round(combinedText.length / processedPages)
       }
     };
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error(`[TEXTRACT-OPT] Error en procesamiento async después de ${processingTime}ms:`, error.message);
+    console.error(`[TEXTRACT-OPT] Error en splitting después de ${processingTime}ms:`, error.message);
+    throw error;
+  }
+}
 
-    if (processingId) {
-      try {
-        await updateProcessingMetadata(processingId, documentType, {
-          status: 'processing_failed',
-          error: error.message,
-          processingTime
-        });
-      } catch (metadataError) {
-        console.warn(`[TEXTRACT-OPT] No se pudo actualizar metadata con error:`, metadataError.message);
-      }
-    }
+async function processSyncDocumentForced(filePath, documentType) {
+  const startTime = Date.now();
+  
+  try {
+    console.log(`[TEXTRACT-OPT] Intentando procesamiento sync forzado para archivo grande`);
+
+    const fileStats = await fs.stat(filePath);
     
+    // Si el archivo es muy grande, rechazar inmediatamente
+    if (fileStats.size > 50 * 1024 * 1024) { // 50MB límite absoluto
+      throw new Error(`File too large for any sync processing: ${formatBytes(fileStats.size)}`);
+    }
+
+    const documentBuffer = await fs.readFile(filePath);
+
+    const params = {
+      Document: {
+        Bytes: documentBuffer,
+      },
+    };
+
+    // Timeout más largo para archivos grandes
+    const extendedTimeout = 90000; // 90 segundos
+    
+    console.log(`[TEXTRACT-OPT] Procesando archivo de ${formatBytes(documentBuffer.length)} con timeout extendido`);
+
+    const textractPromise = textract.detectDocumentText(params).promise();
+    const result = await Promise.race([
+      textractPromise,
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('TEXTRACT_SYNC_TIMEOUT_EXTENDED')), extendedTimeout)
+      )
+    ]);
+
+    const extractedText = extractTextFromTextractResult(result);
+    const processingTime = Date.now() - startTime;
+
+    console.log(`[TEXTRACT-OPT] ✓ Forced sync completado: ${extractedText.length} caracteres en ${processingTime}ms`);
+
+    return {
+      text: extractedText,
+      method: 'sync-forced',
+      processingTime,
+      metadata: {
+        blockCount: result.Blocks?.length || 0,
+        documentMetadata: result.DocumentMetadata,
+        fileSize: documentBuffer.length
+      }
+    };
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error(`[TEXTRACT-OPT] Error en forced sync después de ${processingTime}ms:`, error.message);
     throw error;
   }
 }
@@ -455,6 +359,7 @@ async function validateInputFile(filePath) {
     throw new Error(`FILE_STATS_ERROR: Error obteniendo estadísticas - ${statsError.message}`);
   }
 
+  // Validación de contenido solo para archivos pequeños
   if ((await fs.stat(filePath)).size <= PROCESSING_CONFIG.maxSyncFileSize) {
     try {
       await validateFileContent(filePath);
@@ -540,20 +445,8 @@ function categorizeTextractError(error) {
     return new Error('PDF_PROCESSING_FAILED: Error procesando PDF multipágina');
   }
 
-  if (errorMessage === 'TEXTRACT_SYNC_TIMEOUT') {
+  if (errorMessage === 'TEXTRACT_SYNC_TIMEOUT' || errorMessage === 'TEXTRACT_SYNC_TIMEOUT_EXTENDED') {
     return new Error('TEXTRACT_TIMEOUT: Tiempo de procesamiento sincrónico agotado');
-  }
-
-  if (errorMessage.includes('UNSUPPORTED_IMAGE_CONTENT')) {
-    return new Error('UNSUPPORTED_IMAGE_CONTENT: Contenido de imagen no procesable');
-  }
-
-  if (errorMessage.includes('UNSUPPORTED_DOCUMENT_FORMAT')) {
-    return new Error('UNSUPPORTED_DOCUMENT_FORMAT: Formato de documento no soportado');
-  }
-
-  if (errorMessage.includes('HYBRID_PROCESSING_FAILED')) {
-    return new Error('HYBRID_PROCESSING_FAILED: Falló tanto procesamiento sincrónico como asíncrono');
   }
 
   if (errorCode === 'InvalidParameterException' || errorMessage.includes('InvalidParameter')) {

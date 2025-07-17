@@ -10,7 +10,16 @@ async function validateTextWithDictionary(text, dictionary, minMatches = 1) {
     
     const { normalizedText, sanitizedDictionary, effectiveMinMatches } = validationResult;
     
+    console.log(`[VALIDATOR] Diccionario original: ${dictionary.length} entradas`);
+    console.log(`[VALIDATOR] Primeras 5 entradas: ${dictionary.slice(0, 5).map(w => `"${w}"`).join(', ')}`);
+    console.log(`[VALIDATOR] Diccionario sanitizado: ${sanitizedDictionary.length} palabras únicas de ${dictionary.length} originales`);
     console.log(`[VALIDATOR] Parámetros validados: texto=${normalizedText.length} chars, diccionario=${sanitizedDictionary.length} palabras, minMatches=${effectiveMinMatches}`);
+
+    // CORECCIÓN: Verificar si el diccionario es muy pequeño y usar validación permisiva
+    if (sanitizedDictionary.length < 5) {
+      console.warn(`[VALIDATOR] Diccionario muy pequeño (${sanitizedDictionary.length} entradas), usando validación permisiva`);
+      return await validateTextWithDictionarySimple(text, dictionary, 1);
+    }
 
     const matchResult = await performTextMatching(normalizedText, sanitizedDictionary, effectiveMinMatches);
     
@@ -24,7 +33,9 @@ async function validateTextWithDictionary(text, dictionary, minMatches = 1) {
     
   } catch (error) {
     console.error(`[VALIDATOR] Error crítico en validación:`, error.message);
-    return false;
+    // CORECCIÓN: Fallback a validación simple en caso de error
+    console.log(`[VALIDATOR] Intentando validación simple como fallback`);
+    return await validateTextWithDictionarySimple(text, dictionary, minMatches);
   }
 }
 
@@ -62,17 +73,9 @@ function validateInputParameters(text, dictionary, minMatches) {
       return { isValid: false, reason: 'Diccionario está vacío' };
     }
 
-    // Agregar logging para debug
-    console.log(`[VALIDATOR] Diccionario original: ${dictionary.length} entradas`);
-    console.log(`[VALIDATOR] Primeras 5 entradas: ${dictionary.slice(0, 5).map(item => `"${item}"`).join(', ')}`);
-
     sanitizedDictionary = sanitizeDictionary(dictionary);
     
     if (sanitizedDictionary.length === 0) {
-      console.error(`[VALIDATOR] Diccionario vacío después de sanitización. Entradas originales:`);
-      dictionary.forEach((item, index) => {
-        console.error(`[VALIDATOR]   ${index}: "${item}" (tipo: ${typeof item}, length: ${item?.length || 'N/A'})`);
-      });
       return { isValid: false, reason: 'Diccionario no contiene palabras válidas después de sanitización' };
     }
 
@@ -109,7 +112,6 @@ function sanitizeDictionary(dictionary) {
       const item = dictionary[i];
       
       if (item === null || item === undefined) {
-        console.warn(`[VALIDATOR] Saltando item null/undefined en índice ${i}`);
         continue;
       }
       
@@ -120,21 +122,16 @@ function sanitizeDictionary(dictionary) {
         try {
           keyword = String(item).trim().toLowerCase();
         } catch (conversionError) {
-          console.warn(`[VALIDATOR] No se pudo convertir item del diccionario en índice ${i}: ${conversionError.message}`);
+          console.warn(`[VALIDATOR] No se pudo convertir item del diccionario en índice ${i}`);
           continue;
         }
       }
 
-      // Ser más permisivo con la longitud mínima
+      // CORREGIDO: Aceptar palabras más cortas para diccionarios pequeños
       if (keyword.length >= 1 && keyword.length <= 100) {
-        // Verificar que contiene al menos una letra
-        if (/[a-záéíóúñüçA-ZÁÉÍÓÚÑÜÇ0-9]/.test(keyword)) {
+        if (/[a-záéíóúñü0-9]/.test(keyword)) {
           sanitized.push(keyword);
-        } else {
-          console.warn(`[VALIDATOR] Saltando keyword sin caracteres válidos en índice ${i}: "${keyword}"`);
         }
-      } else {
-        console.warn(`[VALIDATOR] Saltando keyword con longitud inválida en índice ${i}: "${keyword}" (length: ${keyword.length})`);
       }
       
     } catch (itemError) {
@@ -143,30 +140,6 @@ function sanitizeDictionary(dictionary) {
   }
 
   const uniqueKeywords = [...new Set(sanitized)];
-  
-  console.log(`[VALIDATOR] Diccionario sanitizado: ${uniqueKeywords.length} palabras únicas de ${dictionary.length} originales`);
-  
-  // Si el diccionario sigue vacío, intentar un enfoque más permisivo
-  if (uniqueKeywords.length === 0) {
-    console.warn(`[VALIDATOR] Diccionario vacío después de sanitización, intentando enfoque permisivo`);
-    
-    for (let i = 0; i < dictionary.length; i++) {
-      try {
-        const item = dictionary[i];
-        if (item && String(item).trim().length > 0) {
-          const permissiveKeyword = String(item).trim().toLowerCase();
-          if (permissiveKeyword.length > 0) {
-            uniqueKeywords.push(permissiveKeyword);
-            console.log(`[VALIDATOR] Agregado con enfoque permisivo: "${permissiveKeyword}"`);
-          }
-        }
-      } catch (permissiveError) {
-        console.warn(`[VALIDATOR] Error en enfoque permisivo para índice ${i}:`, permissiveError.message);
-      }
-    }
-    
-    console.log(`[VALIDATOR] Después de enfoque permisivo: ${uniqueKeywords.length} palabras`);
-  }
   
   return uniqueKeywords;
 }
@@ -177,6 +150,7 @@ async function performTextMatching(normalizedText, sanitizedDictionary, effectiv
   const matchDetails = [];
   
   try {
+    // Primera pasada: matching exacto
     for (const keyword of sanitizedDictionary) {
       try {
         if (normalizedText.includes(keyword)) {
@@ -196,6 +170,7 @@ async function performTextMatching(normalizedText, sanitizedDictionary, effectiv
       }
     }
 
+    // Si no se alcanza el mínimo, intentar fuzzy matching
     if (matchCount < effectiveMinMatches) {
       console.log(`[VALIDATOR] Matching exacto insuficiente (${matchCount}/${effectiveMinMatches}), intentando matching fuzzy`);
       
@@ -204,6 +179,8 @@ async function performTextMatching(normalizedText, sanitizedDictionary, effectiv
       matchCount += fuzzyResults.additionalMatches;
       matchedKeywords.push(...fuzzyResults.keywords);
       matchDetails.push(...fuzzyResults.details);
+      
+      console.log(`[VALIDATOR] Matching fuzzy completado: ${fuzzyResults.additionalMatches} matches adicionales`);
     }
     
     const isValid = matchCount >= effectiveMinMatches;
@@ -243,6 +220,7 @@ async function performFuzzyMatching(normalizedText, sanitizedDictionary, neededM
       }
       
       try {
+        // 1. Matching sin acentos
         const keywordWithoutAccents = removeAccents(keyword);
         const textWithoutAccents = removeAccents(normalizedText);
         
@@ -258,9 +236,10 @@ async function performFuzzyMatching(normalizedText, sanitizedDictionary, neededM
           continue;
         }
 
-        if (keyword.length >= 6) {
+        // 2. Matching de similaridad para palabras largas
+        if (keyword.length >= 5) {
           const similarMatch = findSimilarWord(textWithoutAccents, keywordWithoutAccents);
-          if (similarMatch.found) {
+          if (similarMatch.found && similarMatch.similarity > 0.75) {
             fuzzyResults.additionalMatches++;
             fuzzyResults.keywords.push(keyword);
             fuzzyResults.details.push({
@@ -274,6 +253,7 @@ async function performFuzzyMatching(normalizedText, sanitizedDictionary, neededM
           }
         }
 
+        // 3. Matching por partes para frases
         if (keyword.includes(' ')) {
           const wordParts = keyword.split(' ').filter(part => part.length > 2);
           const foundParts = wordParts.filter(part => normalizedText.includes(part));
@@ -291,13 +271,27 @@ async function performFuzzyMatching(normalizedText, sanitizedDictionary, neededM
             continue;
           }
         }
+
+        // 4. NUEVO: Matching parcial para palabras largas
+        if (keyword.length >= 6) {
+          const partialMatches = findPartialMatches(normalizedText, keyword);
+          if (partialMatches.length > 0) {
+            fuzzyResults.additionalMatches++;
+            fuzzyResults.keywords.push(keyword);
+            fuzzyResults.details.push({
+              keyword,
+              method: 'fuzzy-partial',
+              originalKeyword: keyword,
+              partialMatches
+            });
+            continue;
+          }
+        }
         
       } catch (fuzzyKeywordError) {
         console.warn(`[VALIDATOR] Error en fuzzy matching para '${keyword}':`, fuzzyKeywordError.message);
       }
     }
-    
-    console.log(`[VALIDATOR] Matching fuzzy completado: ${fuzzyResults.additionalMatches} matches adicionales`);
     
   } catch (fuzzyError) {
     console.error(`[VALIDATOR] Error en fuzzy matching:`, fuzzyError.message);
@@ -318,6 +312,28 @@ function findAllOccurrences(text, keyword) {
     console.warn(`[VALIDATOR] Error finding occurrences:`, error.message);
   }
   return positions;
+}
+
+function findPartialMatches(text, keyword) {
+  const matches = [];
+  try {
+    // Buscar subsecuencias del keyword en el texto
+    const minLength = Math.max(3, Math.floor(keyword.length * 0.6));
+    
+    for (let i = 0; i <= keyword.length - minLength; i++) {
+      const substring = keyword.substring(i, i + minLength);
+      if (text.includes(substring)) {
+        matches.push({
+          substring,
+          position: text.indexOf(substring),
+          coverage: substring.length / keyword.length
+        });
+      }
+    }
+  } catch (error) {
+    console.warn(`[VALIDATOR] Error en partial matching:`, error.message);
+  }
+  return matches;
 }
 
 function removeAccents(text) {
@@ -343,7 +359,7 @@ function findSimilarWord(text, keyword) {
     for (const word of words) {
       if (word.length >= keyword.length - 2 && word.length <= keyword.length + 2) {
         const similarity = calculateSimpleSimilarity(word, keyword);
-        if (similarity > 0.8 && similarity > bestMatch.similarity) {
+        if (similarity > 0.75 && similarity > bestMatch.similarity) {
           bestMatch = {
             found: true,
             match: word,
@@ -379,6 +395,7 @@ function calculateSimpleSimilarity(word1, word2) {
   }
 }
 
+// CORREGIDA: Validación simple mejorada
 async function validateTextWithDictionarySimple(text, dictionary, minMatches = 1) {
   console.log(`[VALIDATOR] Usando validación simple como fallback`);
   
@@ -389,19 +406,46 @@ async function validateTextWithDictionarySimple(text, dictionary, minMatches = 1
     
     const normalizedText = String(text).toLowerCase();
     let matchCount = 0;
+    const foundKeywords = [];
     
     for (const keyword of dictionary) {
       try {
         const normalizedKeyword = String(keyword).toLowerCase().trim();
-        if (normalizedKeyword && normalizedText.includes(normalizedKeyword)) {
-          matchCount++;
-          if (matchCount >= minMatches) {
-            return true;
+        if (normalizedKeyword && normalizedKeyword.length > 0) {
+          
+          // Búsqueda exacta
+          if (normalizedText.includes(normalizedKeyword)) {
+            matchCount++;
+            foundKeywords.push(normalizedKeyword);
+            if (matchCount >= minMatches) {
+              console.log(`[VALIDATOR] Validación simple exitosa: encontradas ${foundKeywords.join(', ')}`);
+              return true;
+            }
+          }
+          
+          // NUEVO: Búsqueda sin acentos para validación simple
+          else {
+            const keywordNoAccents = removeAccents(normalizedKeyword);
+            const textNoAccents = removeAccents(normalizedText);
+            
+            if (textNoAccents.includes(keywordNoAccents)) {
+              matchCount++;
+              foundKeywords.push(normalizedKeyword + ' (sin acentos)');
+              if (matchCount >= minMatches) {
+                console.log(`[VALIDATOR] Validación simple exitosa (sin acentos): encontradas ${foundKeywords.join(', ')}`);
+                return true;
+              }
+            }
           }
         }
       } catch (keywordError) {
         continue;
       }
+    }
+    
+    console.log(`[VALIDATOR] Validación simple: ${matchCount} matches encontrados de ${minMatches} requeridos`);
+    if (foundKeywords.length > 0) {
+      console.log(`[VALIDATOR] Palabras encontradas: ${foundKeywords.join(', ')}`);
     }
     
     return matchCount >= minMatches;
@@ -412,23 +456,62 @@ async function validateTextWithDictionarySimple(text, dictionary, minMatches = 1
   }
 }
 
-async function validateTextWithDictionaryRobust(text, dictionary, minMatches = 1) {
+// NUEVA: Validación específica para diccionarios muy pequeños
+async function validateTextWithSmallDictionary(text, dictionary) {
+  console.log(`[VALIDATOR] Validación especial para diccionario pequeño (${dictionary.length} entradas)`);
+  
   try {
-    // Manejar casos especiales de documentos no procesables
-    if (text && text.includes('DOCUMENTO_NO_PROCESABLE') || text.includes('DOCUMENTO_PDF_NO_PROCESABLE')) {
-      console.log(`[VALIDATOR] Documento no procesable detectado, usando validación basada en nombre`);
-      return validateDocumentByFilename(text, dictionary);
-    }
-    
-    // Si el diccionario está vacío o es muy pequeño, usar validación más permisiva
-    if (!dictionary || dictionary.length === 0) {
-      console.warn(`[VALIDATOR] Diccionario vacío o null, retornando false`);
+    if (!text || !dictionary || dictionary.length === 0) {
       return false;
     }
     
-    if (dictionary.length <= 2) {
+    const normalizedText = String(text).toLowerCase();
+    
+    // Para diccionarios muy pequeños, ser más permisivo
+    for (const keyword of dictionary) {
+      try {
+        const normalizedKeyword = String(keyword).toLowerCase().trim();
+        
+        if (normalizedKeyword.length > 0) {
+          // Búsqueda muy permisiva
+          if (normalizedText.includes(normalizedKeyword) ||
+              removeAccents(normalizedText).includes(removeAccents(normalizedKeyword))) {
+            console.log(`[VALIDATOR] Match encontrado en diccionario pequeño: "${normalizedKeyword}"`);
+            return true;
+          }
+          
+          // Para palabras muy cortas, buscar como parte de palabras más largas
+          if (normalizedKeyword.length >= 3) {
+            const words = normalizedText.split(/\s+/);
+            for (const word of words) {
+              if (word.includes(normalizedKeyword) || 
+                  removeAccents(word).includes(removeAccents(normalizedKeyword))) {
+                console.log(`[VALIDATOR] Match parcial encontrado: "${normalizedKeyword}" en "${word}"`);
+                return true;
+              }
+            }
+          }
+        }
+      } catch (keywordError) {
+        continue;
+      }
+    }
+    
+    console.log(`[VALIDATOR] No se encontraron matches en diccionario pequeño`);
+    return false;
+    
+  } catch (error) {
+    console.error(`[VALIDATOR] Error en validación de diccionario pequeño:`, error.message);
+    return false;
+  }
+}
+
+async function validateTextWithDictionaryRobust(text, dictionary, minMatches = 1) {
+  try {
+    // CORREGIDO: Verificar tamaño del diccionario primero
+    if (dictionary && dictionary.length < 5) {
       console.warn(`[VALIDATOR] Diccionario muy pequeño (${dictionary.length} entradas), usando validación permisiva`);
-      return await validateTextWithDictionarySimple(text, dictionary, minMatches);
+      return await validateTextWithSmallDictionary(text, dictionary);
     }
     
     return await validateTextWithDictionary(text, dictionary, minMatches);
@@ -436,98 +519,21 @@ async function validateTextWithDictionaryRobust(text, dictionary, minMatches = 1
     console.warn(`[VALIDATOR] Validación principal falló, usando fallback:`, mainError.message);
     
     try {
+      // Intentar validación simple
       return await validateTextWithDictionarySimple(text, dictionary, minMatches);
     } catch (fallbackError) {
       console.error(`[VALIDATOR] Fallback también falló:`, fallbackError.message);
+      
+      // Último recurso: validación muy permisiva
+      if (dictionary && dictionary.length > 0) {
+        console.log(`[VALIDATOR] Intentando validación de último recurso`);
+        return await validateTextWithSmallDictionary(text, dictionary);
+      }
+      
       return false;
     }
   }
 }
-
-function validateDocumentByFilename(text, dictionary) {
-  try {
-    console.log(`[VALIDATOR] Validando documento no procesable por nombre de archivo`);
-    
-    // Extraer información del texto de error
-    const textLower = text.toLowerCase();
-    
-    // Buscar coincidencias de palabras clave en el nombre del archivo
-    const fileNameMatches = [];
-    
-    for (const keyword of dictionary) {
-      const keywordLower = String(keyword).toLowerCase().trim();
-      if (keywordLower && textLower.includes(keywordLower)) {
-        fileNameMatches.push(keyword);
-      }
-    }
-    
-    // También verificar términos relacionados comunes
-    const commonTerms = {
-      'bachiller': ['bachiller', 'diploma', 'acta', 'grado'],
-      'tecnologo': ['tecnologo', 'tecnol', 'diploma', 'acta'],
-      'tecnico': ['tecnico', 'tecnica', 'diploma', 'acta'],
-      'cedula': ['cedula', 'identidad', 'documento', 'cc'],
-      'pago': ['pago', 'recibo', 'derechos', 'grado'],
-      'encuesta': ['encuesta', 'seguimiento', 'confirmacion'],
-      'icfes': ['icfes', 'saber', 'resultados', 'examen'],
-      'prueba': ['resultados', 'ek', 'prueba', 'saber']
-    };
-    
-    for (const [category, terms] of Object.entries(commonTerms)) {
-      if (textLower.includes(category)) {
-        for (const term of terms) {
-          const matchingKeywords = dictionary.filter(keyword => 
-            String(keyword).toLowerCase().includes(term)
-          );
-          fileNameMatches.push(...matchingKeywords);
-        }
-      }
-    }
-    
-    const uniqueMatches = [...new Set(fileNameMatches)];
-    
-    if (uniqueMatches.length > 0) {
-      console.log(`[VALIDATOR] Validación por nombre exitosa: ${uniqueMatches.length} coincidencias encontradas`);
-      console.log(`[VALIDATOR] Coincidencias: ${uniqueMatches.slice(0, 3).join(', ')}`);
-      return true;
-    }
-    
-    console.log(`[VALIDATOR] No se encontraron coincidencias en el nombre del archivo`);
-    return false;
-    
-  } catch (error) {
-    console.error(`[VALIDATOR] Error en validación por nombre:`, error.message);
-    return false;
-  }
-}
-
-async function validateDocumentWithExtractionError(text, dictionary, documentType) {
-  try {
-    console.log(`[VALIDATOR] Validando documento con error de extracción: ${documentType}`);
-    
-    // Si el texto indica un error de procesamiento, intentar validación alternativa
-    if (text.includes('DOCUMENTO_NO_PROCESABLE') || 
-        text.includes('error-fallback') || 
-        text.includes('Formato no soportado')) {
-      
-      // Para algunos tipos de documento, podemos ser más permisivos
-      const permissiveTypes = ['recibo_pago', 'encuesta_m0', 'acta_homologacion'];
-      
-      if (permissiveTypes.includes(documentType)) {
-        console.log(`[VALIDATOR] Aplicando validación permisiva para tipo: ${documentType}`);
-        return await validateDocumentByFilename(text, dictionary);
-      }
-    }
-    
-    // Para documentos críticos, requerir validación estricta
-    return await validateTextWithDictionaryRobust(text, dictionary, 1);
-    
-  } catch (error) {
-    console.error(`[VALIDATOR] Error en validación con error de extracción:`, error.message);
-    return false;
-  }
-}
-
 
 function validateDictionaryIntegrity(dictionary, dictionaryName = 'unknown') {
   try {
@@ -657,8 +663,7 @@ function diagnoseValidationIssue(text, dictionary, minMatches = 1) {
 module.exports = {
   validateTextWithDictionary: validateTextWithDictionaryRobust,
   validateTextWithDictionarySimple,
+  validateTextWithSmallDictionary,
   validateDictionaryIntegrity,
-  diagnoseValidationIssue,
-  validateDocumentByFilename,
-  validateDocumentWithExtractionError
+  diagnoseValidationIssue
 };

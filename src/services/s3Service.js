@@ -7,7 +7,7 @@ const s3 = new AWS.S3({
   apiVersion: 'latest',
   region: process.env.AWS_REGION || 'us-east-1',
   httpOptions: {
-    timeout: 30000,
+    timeout: 60000,
     connectTimeout: 5000
   },
   maxRetries: 3,
@@ -24,22 +24,34 @@ const S3_CONFIG = {
   serverSideEncryption: 'AES256'
 };
 
+// CONFIGURACIÓN PARA PROCESAMIENTO ASÍNCRONO
+const ASYNC_CONFIG = {
+  snsTopicArn: process.env.SNS_TOPIC_ARN || null,
+  textractRoleArn: process.env.TEXTRACT_ROLE_ARN || null,
+  enableAsyncProcessing: process.env.ENABLE_ASYNC_PROCESSING === 'true',
+  // Fallback: intentar sin SNS si no está configurado
+  allowAsyncWithoutSNS: process.env.ALLOW_ASYNC_WITHOUT_SNS === 'true'
+};
+
 async function initializeS3Processing(requestId) {
   try {
     const timestamp = Date.now();
     const randomId = crypto.randomBytes(8).toString('hex');
-    // ✅ CORRECCIÓN: Asegurar que requestId sea string
-    const safeRequestId = String(requestId || 'unknown');
-    const processingId = `${safeRequestId}-${timestamp}-${randomId}`;
+    const processingId = `${requestId}-${timestamp}-${randomId}`;
     
     console.log(`[S3] Inicializando procesamiento S3: ${processingId}`);
 
     const metadata = {
-      requestId: safeRequestId,
+      requestId,
       processingId,
       timestamp: new Date().toISOString(),
       status: 'initialized',
-      documents: {}
+      documents: {},
+      asyncConfig: {
+        snsConfigured: !!ASYNC_CONFIG.snsTopicArn,
+        roleConfigured: !!ASYNC_CONFIG.textractRoleArn,
+        asyncEnabled: ASYNC_CONFIG.enableAsyncProcessing
+      }
     };
     
     const metadataKey = `${S3_CONFIG.prefix}${processingId}/metadata.json`;
@@ -53,7 +65,7 @@ async function initializeS3Processing(requestId) {
       ServerSideEncryption: S3_CONFIG.serverSideEncryption,
       Metadata: {
         'processing-id': processingId,
-        'request-id': safeRequestId, // ✅ CORRECCIÓN: Ahora es string
+        'request-id': requestId.toString(),
         'created-at': timestamp.toString()
       }
     }).promise();
@@ -88,10 +100,17 @@ async function uploadToS3(filePath, processingId, documentType, originalFileName
     const fileBuffer = await fs.readFile(filePath);
 
     const fileExtension = path.extname(originalFileName).toLowerCase();
-    const sanitizedFileName = sanitizeFileName(originalFileName);
+    const sanitizedFileName = sanitizeFileNameForS3(originalFileName);
     const s3Key = `${S3_CONFIG.prefix}${processingId}/${documentType}/${sanitizedFileName}`;
 
     const contentType = getContentType(fileExtension);
+
+    const sanitizedMetadata = {
+      'processing-id': processingId,
+      'document-type': documentType,
+      'upload-timestamp': Date.now().toString(),
+      'file-size': fileSize.toString()
+    };
 
     const uploadParams = {
       Bucket: S3_CONFIG.bucket,
@@ -100,13 +119,7 @@ async function uploadToS3(filePath, processingId, documentType, originalFileName
       ContentType: contentType,
       StorageClass: S3_CONFIG.storageClass,
       ServerSideEncryption: S3_CONFIG.serverSideEncryption,
-      Metadata: {
-        'processing-id': processingId,
-        'document-type': documentType,
-        'original-filename': originalFileName,
-        'upload-timestamp': Date.now().toString(),
-        'file-size': fileSize.toString()
-      },
+      Metadata: sanitizedMetadata,
       Tagging: `ProcessingId=${processingId}&DocumentType=${documentType}&UploadDate=${new Date().toISOString().split('T')[0]}`
     };
 
@@ -122,7 +135,7 @@ async function uploadToS3(filePath, processingId, documentType, originalFileName
 
     await updateProcessingMetadata(processingId, documentType, {
       s3Key,
-      originalFileName,
+      originalFileName: sanitizedFileName,
       fileSize,
       uploadTimestamp: new Date().toISOString(),
       status: 'uploaded'
@@ -169,7 +182,8 @@ async function uploadLargeFile(uploadParams) {
   return managedUpload.promise();
 }
 
-async function startAsyncDocumentAnalysis(s3Key, processingId, documentType, jobType = 'ANALYZE_DOCUMENT') {
+// CORREGIDO: Procesamiento asíncrono con configuración flexible
+async function startAsyncDocumentAnalysis(s3Key, processingId, documentType, jobType = 'DETECT_DOCUMENT_TEXT') {
   try {
     console.log(`[S3] Iniciando análisis asíncrono: ${s3Key}`);
     
@@ -189,12 +203,21 @@ async function startAsyncDocumentAnalysis(s3Key, processingId, documentType, job
         }
       },
       JobTag: `${processingId}-${documentType}`,
-      ClientRequestToken: `${processingId}-${documentType}-${Date.now()}`,
-      NotificationChannel: {
-        SNSTopicArn: process.env.SNS_TOPIC_ARN,
-        RoleArn: process.env.TEXTRACT_ROLE_ARN
-      }
+      ClientRequestToken: `${processingId}-${documentType}-${Date.now()}`
     };
+
+    // CORREGIDO: Configuración condicional de NotificationChannel
+    if (ASYNC_CONFIG.snsTopicArn && ASYNC_CONFIG.textractRoleArn) {
+      jobParams.NotificationChannel = {
+        SNSTopicArn: ASYNC_CONFIG.snsTopicArn,
+        RoleArn: ASYNC_CONFIG.textractRoleArn
+      };
+      console.log(`[S3] Usando configuración SNS para notificaciones asíncronas`);
+    } else if (ASYNC_CONFIG.allowAsyncWithoutSNS) {
+      console.warn(`[S3] ⚠️ Procesamiento asíncrono sin SNS - requerirá polling manual`);
+    } else {
+      throw new Error('ASYNC_CONFIG_MISSING: Se requiere SNS_TOPIC_ARN y TEXTRACT_ROLE_ARN para procesamiento asíncrono');
+    }
     
     let startJobPromise;
     
@@ -213,7 +236,8 @@ async function startAsyncDocumentAnalysis(s3Key, processingId, documentType, job
       textractJobId: jobResult.JobId,
       textractJobType: jobType,
       analysisStarted: new Date().toISOString(),
-      status: 'analyzing'
+      status: 'analyzing',
+      snsConfigured: !!ASYNC_CONFIG.snsTopicArn
     });
     
     return {
@@ -221,7 +245,8 @@ async function startAsyncDocumentAnalysis(s3Key, processingId, documentType, job
       jobType,
       status: 'started',
       processingId,
-      documentType
+      documentType,
+      requiresPolling: !ASYNC_CONFIG.snsTopicArn
     };
     
   } catch (error) {
@@ -237,7 +262,7 @@ async function startAsyncDocumentAnalysis(s3Key, processingId, documentType, job
   }
 }
 
-async function checkAsyncJobStatus(jobId, jobType = 'ANALYZE_DOCUMENT') {
+async function checkAsyncJobStatus(jobId, jobType = 'DETECT_DOCUMENT_TEXT') {
   try {
     const textract = new AWS.Textract({
       region: S3_CONFIG.region
@@ -269,7 +294,7 @@ async function checkAsyncJobStatus(jobId, jobType = 'ANALYZE_DOCUMENT') {
   }
 }
 
-async function getAllAsyncJobResults(jobId, jobType = 'ANALYZE_DOCUMENT') {
+async function getAllAsyncJobResults(jobId, jobType = 'DETECT_DOCUMENT_TEXT') {
   try {
     console.log(`[S3] Obteniendo resultados completos del job: ${jobId}`);
     
@@ -319,6 +344,109 @@ async function getAllAsyncJobResults(jobId, jobType = 'ANALYZE_DOCUMENT') {
     console.error(`[S3] Error obteniendo resultados del job ${jobId}:`, error.message);
     throw new Error(`JOB_RESULTS_ERROR: ${error.message}`);
   }
+}
+
+// CORREGIDO: Procesamiento de PDFs multipágina con configuración flexible
+async function processMultiPagePDF(s3Key, processingId, documentType) {
+  try {
+    console.log(`[S3] Iniciando procesamiento de PDF multipágina: ${s3Key}`);
+
+    // Verificar configuración antes de proceder
+    if (!ASYNC_CONFIG.enableAsyncProcessing && !ASYNC_CONFIG.allowAsyncWithoutSNS) {
+      throw new Error('ASYNC_PROCESSING_DISABLED: Habilitar ENABLE_ASYNC_PROCESSING=true en variables de entorno');
+    }
+
+    const analysisJob = await startAsyncDocumentAnalysis(s3Key, processingId, documentType, 'DETECT_DOCUMENT_TEXT');
+
+    let attempts = 0;
+    const maxAttempts = 60; // Aumentado para documentos grandes
+    let backoffDelay = 2000;
+    
+    console.log(`[S3] Esperando completación del job ${analysisJob.jobId}...`);
+    
+    while (attempts < maxAttempts) {
+      attempts++;
+      
+      await new Promise(resolve => setTimeout(resolve, backoffDelay));
+      
+      const jobStatus = await checkAsyncJobStatus(analysisJob.jobId, analysisJob.jobType);
+      
+      console.log(`[S3] Job status check ${attempts}/${maxAttempts}: ${jobStatus.status}`);
+      
+      if (jobStatus.status === 'SUCCEEDED') {
+        console.log(`[S3] ✓ Análisis completado en intento ${attempts}`);
+
+        const results = await getAllAsyncJobResults(analysisJob.jobId, analysisJob.jobType);
+
+        const extractedText = extractTextFromBlocks(results.blocks);
+
+        await updateProcessingMetadata(processingId, documentType, {
+          status: 'completed',
+          textExtracted: true,
+          textLength: extractedText.length,
+          totalBlocks: results.totalBlocks,
+          pagesProcessed: results.pagesProcessed,
+          completedAt: new Date().toISOString()
+        });
+        
+        return {
+          success: true,
+          text: extractedText,
+          metadata: {
+            jobId: analysisJob.jobId,
+            totalBlocks: results.totalBlocks,
+            pagesProcessed: results.pagesProcessed,
+            textLength: extractedText.length
+          }
+        };
+        
+      } else if (jobStatus.status === 'FAILED') {
+        throw new Error(`Textract job failed: ${jobStatus.statusMessage}`);
+        
+      } else if (jobStatus.status === 'IN_PROGRESS') {
+        // Backoff progresivo pero más conservador
+        backoffDelay = Math.min(backoffDelay * 1.2, 8000);
+        continue;
+        
+      } else {
+        console.warn(`[S3] Estado inesperado del job: ${jobStatus.status}`);
+        continue;
+      }
+    }
+    
+    throw new Error(`Timeout waiting for Textract job completion after ${maxAttempts} attempts`);
+    
+  } catch (error) {
+    console.error(`[S3] Error procesando PDF multipágina:`, error.message);
+    
+    await updateProcessingMetadata(processingId, documentType, {
+      status: 'processing_failed',
+      error: error.message,
+      failedAt: new Date().toISOString()
+    });
+    
+    throw new Error(`MULTIPAGE_PDF_ERROR: ${error.message}`);
+  }
+}
+
+function extractTextFromBlocks(blocks) {
+  if (!blocks || !Array.isArray(blocks)) {
+    return '';
+  }
+  
+  let extractedText = '';
+  let lineCount = 0;
+  
+  blocks.forEach(block => {
+    if (block.BlockType === 'LINE' && block.Text) {
+      extractedText += block.Text + ' ';
+      lineCount++;
+    }
+  });
+  
+  console.log(`[S3] Texto extraído: ${lineCount} líneas, ${extractedText.length} caracteres`);
+  
+  return extractedText.trim();
 }
 
 async function updateProcessingMetadata(processingId, documentType, updateData) {
@@ -379,100 +507,6 @@ async function getProcessingMetadata(processingId) {
   }
 }
 
-async function processMultiPagePDF(s3Key, processingId, documentType) {
-  try {
-    console.log(`[S3] Iniciando procesamiento de PDF multipágina: ${s3Key}`);
-
-    const analysisJob = await startAsyncDocumentAnalysis(s3Key, processingId, documentType, 'DETECT_DOCUMENT_TEXT');
-
-    let attempts = 0;
-    const maxAttempts = 30;
-    let backoffDelay = 2000;
-    
-    while (attempts < maxAttempts) {
-      attempts++;
-      
-      await new Promise(resolve => setTimeout(resolve, backoffDelay));
-      
-      const jobStatus = await checkAsyncJobStatus(analysisJob.jobId, analysisJob.jobType);
-      
-      console.log(`[S3] Job status check ${attempts}/${maxAttempts}: ${jobStatus.status}`);
-      
-      if (jobStatus.status === 'SUCCEEDED') {
-        console.log(`[S3] ✓ Análisis completado en intento ${attempts}`);
-
-        const results = await getAllAsyncJobResults(analysisJob.jobId, analysisJob.jobType);
-
-        const extractedText = extractTextFromBlocks(results.blocks);
-
-        await updateProcessingMetadata(processingId, documentType, {
-          status: 'completed',
-          textExtracted: true,
-          textLength: extractedText.length,
-          totalBlocks: results.totalBlocks,
-          pagesProcessed: results.pagesProcessed,
-          completedAt: new Date().toISOString()
-        });
-        
-        return {
-          success: true,
-          text: extractedText,
-          metadata: {
-            jobId: analysisJob.jobId,
-            totalBlocks: results.totalBlocks,
-            pagesProcessed: results.pagesProcessed,
-            textLength: extractedText.length
-          }
-        };
-        
-      } else if (jobStatus.status === 'FAILED') {
-        throw new Error(`Textract job failed: ${jobStatus.statusMessage}`);
-        
-      } else if (jobStatus.status === 'IN_PROGRESS') {
-        backoffDelay = Math.min(backoffDelay * 1.5 + Math.random() * 1000, 10000);
-        continue;
-        
-      } else {
-        console.warn(`[S3] Estado inesperado del job: ${jobStatus.status}`);
-        continue;
-      }
-    }
-    
-    throw new Error(`Timeout waiting for Textract job completion after ${maxAttempts} attempts`);
-    
-  } catch (error) {
-    console.error(`[S3] Error procesando PDF multipágina:`, error.message);
-    
-    await updateProcessingMetadata(processingId, documentType, {
-      status: 'processing_failed',
-      error: error.message,
-      failedAt: new Date().toISOString()
-    });
-    
-    throw new Error(`MULTIPAGE_PDF_ERROR: ${error.message}`);
-  }
-}
-
-function extractTextFromBlocks(blocks) {
-  if (!blocks || !Array.isArray(blocks)) {
-    return '';
-  }
-  
-  let extractedText = '';
-  let lineCount = 0;
-  
-  blocks.forEach(block => {
-    if (block.BlockType === 'LINE' && block.Text) {
-      extractedText += block.Text + ' ';
-      lineCount++;
-    }
-  });
-  
-  console.log(`[S3] Texto extraído: ${lineCount} líneas, ${extractedText.length} caracteres`);
-  
-  return extractedText.trim();
-}
-
 async function cleanupS3Processing(processingId) {
   try {
     console.log(`[S3] Iniciando limpieza de recursos: ${processingId}`);
@@ -508,6 +542,30 @@ async function cleanupS3Processing(processingId) {
     
   } catch (error) {
     console.error(`[S3] Error durante limpieza:`, error.message);
+  }
+}
+
+function sanitizeFileNameForS3(fileName) {
+  try {
+    let sanitized = fileName
+      .replace(/[^\w\s.-]/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .substring(0, 200);
+
+    if (!sanitized || sanitized.trim().length === 0) {
+      const timestamp = Date.now();
+      const ext = path.extname(fileName) || '.pdf';
+      sanitized = `document_${timestamp}${ext}`;
+    }
+    
+    console.log(`[S3] Nombre sanitizado: "${fileName}" -> "${sanitized}"`);
+    return sanitized;
+    
+  } catch (error) {
+    console.error(`[S3] Error sanitizando nombre:`, error.message);
+    const timestamp = Date.now();
+    return `document_${timestamp}.pdf`;
   }
 }
 
@@ -572,6 +630,18 @@ async function verifyS3Configuration() {
   }
 }
 
+// NUEVA: Función para verificar configuración asíncrona
+function getAsyncConfigStatus() {
+  return {
+    snsConfigured: !!ASYNC_CONFIG.snsTopicArn,
+    roleConfigured: !!ASYNC_CONFIG.textractRoleArn,
+    asyncEnabled: ASYNC_CONFIG.enableAsyncProcessing,
+    allowWithoutSNS: ASYNC_CONFIG.allowAsyncWithoutSNS,
+    snsTopicArn: ASYNC_CONFIG.snsTopicArn || 'NOT_CONFIGURED',
+    textractRoleArn: ASYNC_CONFIG.textractRoleArn || 'NOT_CONFIGURED'
+  };
+}
+
 module.exports = {
   initializeS3Processing,
   uploadToS3,
@@ -583,5 +653,7 @@ module.exports = {
   getProcessingMetadata,
   cleanupS3Processing,
   verifyS3Configuration,
-  S3_CONFIG
+  getAsyncConfigStatus,
+  S3_CONFIG,
+  ASYNC_CONFIG
 };
