@@ -2,7 +2,6 @@ const fs = require("fs-extra");
 const path = require("path");
 const { PDFDocument } = require("pdf-lib");
 
-// Configuración: máximo de páginas a procesar
 const MAX_PAGES_TO_PROCESS = 3;
 
 async function splitPdfIntoPages(pdfPath) {
@@ -20,7 +19,6 @@ async function splitPdfIntoPages(pdfPath) {
     
     console.log(`[PDF-SPLITTER] PDF tiene ${totalPageCount} página(s) total(es)`);
 
-    // Determinar cuántas páginas procesar
     const pagesToProcess = Math.min(totalPageCount, MAX_PAGES_TO_PROCESS);
     
     if (totalPageCount > MAX_PAGES_TO_PROCESS) {
@@ -39,7 +37,6 @@ async function splitPdfIntoPages(pdfPath) {
 
     const splitPages = [];
 
-    // Procesar solo las primeras páginas hasta el límite
     for (let i = 0; i < pagesToProcess; i++) {
       try {
         console.log(`[PDF-SPLITTER] Procesando página ${i + 1}/${pagesToProcess} (de ${totalPageCount} totales)`);
@@ -59,7 +56,6 @@ async function splitPdfIntoPages(pdfPath) {
         console.log(`[PDF-SPLITTER] ✓ Página ${i + 1} guardada como: ${pageFileName}`);
       } catch (pageError) {
         console.error(`[PDF-SPLITTER] Error procesando página ${i + 1}:`, pageError.message);
-        // Continuar con la siguiente página si hay error en una específica
       }
     }
 
@@ -110,12 +106,10 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// Función para obtener el límite actual (útil para debugging)
 function getMaxPagesLimit() {
   return MAX_PAGES_TO_PROCESS;
 }
 
-// Función para cambiar el límite dinámicamente si es necesario
 function setMaxPagesLimit(newLimit) {
   if (newLimit && typeof newLimit === 'number' && newLimit > 0) {
     console.log(`[PDF-SPLITTER] Límite de páginas cambiado de ${MAX_PAGES_TO_PROCESS} a ${newLimit}`);

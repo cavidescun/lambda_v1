@@ -1,148 +1,247 @@
 const AWS = require("aws-sdk");
 const fs = require("fs-extra");
 const path = require("path");
-const { splitPdfIntoPages, getFileStats, getMaxPagesLimit } = require("./pdfSplitter");
+const { uploadToS3, processMultiPagePDF, updateProcessingMetadata } = require("./s3Service");
 
 const textract = new AWS.Textract({
   httpOptions: {
-    timeout: 50000,
+    timeout: 60000,
     retries: 3,
   },
+  maxRetries: 3,
+  retryDelayOptions: {
+    customBackoff: (retryCount) => Math.pow(2, retryCount) * 200
+  }
 });
 
-async function extractTextFromDocument(filePath) {
-  console.log(`[TEXTRACT] Iniciando extracción robusta de texto de: ${path.basename(filePath)}`);
+const PROCESSING_CONFIG = {
+  maxSyncFileSize: 5 * 1024 * 1024,
+  maxFileSize: 500 * 1024 * 1024,
+  useAsyncForPDF: true,
+  syncTimeout: 45000,
+  asyncPollInterval: 2000,
+  asyncMaxWaitTime: 300000
+};
+
+async function extractTextFromDocument(filePath, documentType, processingId = null) {
+  console.log(`[TEXTRACT-OPT] Iniciando extracción optimizada: ${path.basename(filePath)}`);
 
   try {
     await validateInputFile(filePath);
-  } catch (validationError) {
-    console.error(`[TEXTRACT] Validación falló:`, validationError.message);
-    throw validationError;
+
+    const fileStats = await getFileStats(filePath);
+    console.log(`[TEXTRACT-OPT] Archivo: ${fileStats.name} (${fileStats.sizeFormatted})`);
+
+    const strategy = determineProcessingStrategy(filePath, fileStats, documentType);
+    console.log(`[TEXTRACT-OPT] Estrategia de procesamiento: ${strategy.type}`);
+
+    let extractionResult;
+
+    switch (strategy.type) {
+      case 'sync':
+        extractionResult = await processSyncDocument(filePath, documentType);
+        break;
+        
+      case 'async-s3':
+        if (!processingId) {
+          throw new Error('Processing ID required for S3 async processing');
+        }
+        extractionResult = await processAsyncS3Document(filePath, documentType, processingId);
+        break;
+        
+      case 'hybrid':
+        try {
+          extractionResult = await processSyncDocument(filePath, documentType);
+        } catch (syncError) {
+          console.warn(`[TEXTRACT-OPT] Sync falló, usando async: ${syncError.message}`);
+          if (!processingId) {
+            throw new Error('Processing ID required for fallback async processing');
+          }
+          extractionResult = await processAsyncS3Document(filePath, documentType, processingId);
+        }
+        break;
+        
+      default:
+        throw new Error(`Unknown processing strategy: ${strategy.type}`);
+    }
+
+    if (!extractionResult.text || extractionResult.text.trim().length === 0) {
+      throw new Error('NO_TEXT_EXTRACTED: No se extrajo texto válido del documento');
+    }
+
+    console.log(`[TEXTRACT-OPT] ✓ Extracción exitosa: ${extractionResult.text.length} caracteres`);
+    console.log(`[TEXTRACT-OPT] Método usado: ${extractionResult.method}, Tiempo: ${extractionResult.processingTime}ms`);
+
+    return extractionResult.text;
+
+  } catch (error) {
+    console.error(`[TEXTRACT-OPT] Error en extracción:`, error.message);
+    throw categorizeTextractError(error);
+  }
+}
+
+function determineProcessingStrategy(filePath, fileStats, documentType) {
+  const fileExtension = path.extname(filePath).toLowerCase();
+  const fileSize = fileStats.size;
+
+  if (fileSize > PROCESSING_CONFIG.maxSyncFileSize) {
+    return {
+      type: 'async-s3',
+      reason: `File size ${fileStats.sizeFormatted} exceeds sync limit`
+    };
   }
 
-  let fileStats;
-  try {
-    fileStats = await getFileStats(filePath);
-    console.log(`[TEXTRACT] Archivo: ${fileStats.name} (${fileStats.sizeFormatted})`);
-    console.log(`[TEXTRACT] Límite de páginas configurado: ${getMaxPagesLimit()}`);
-  } catch (statsError) {
-    console.warn(`[TEXTRACT] No se pudieron obtener estadísticas:`, statsError.message);
-    fileStats = { name: path.basename(filePath), size: 0, sizeFormatted: 'Unknown' };
+  if (fileExtension === '.pdf' && PROCESSING_CONFIG.useAsyncForPDF) {
+    return {
+      type: 'async-s3',
+      reason: 'PDF documents processed async for better multi-page support'
+    };
   }
 
-  try {
-    await validateFileContent(filePath);
-  } catch (contentError) {
-    console.error(`[TEXTRACT] Contenido inválido:`, contentError.message);
-    throw contentError;
+  if (fileSize <= PROCESSING_CONFIG.maxSyncFileSize && 
+      ['.jpg', '.jpeg', '.png', '.tiff', '.tif'].includes(fileExtension)) {
+    return {
+      type: 'sync',
+      reason: `Small ${fileExtension} file suitable for sync processing`
+    };
   }
 
-  let pageFiles = [];
-  try {
-    pageFiles = await splitPdfIntoPages(filePath);
-    console.log(`[TEXTRACT] PDF dividido en ${pageFiles.length} archivo(s) para procesar`);
-  } catch (splitError) {
-    console.error(`[TEXTRACT] Error dividiendo PDF:`, splitError.message);
-    console.log(`[TEXTRACT] Continuando con archivo original como fallback`);
-    pageFiles = [filePath];
-  }
+  return {
+    type: 'hybrid',
+    reason: 'Use sync with async fallback'
+  };
+}
 
-  const totalFilesToProcess = pageFiles.length;
-  const maxPagesLimit = getMaxPagesLimit();
+async function processSyncDocument(filePath, documentType) {
+  const startTime = Date.now();
   
-  console.log(`[TEXTRACT] Procesando ${totalFilesToProcess} archivo(s) (límite: ${maxPagesLimit} páginas)`);
+  try {
+    console.log(`[TEXTRACT-OPT] Procesamiento sincrónico iniciado`);
 
-  let combinedText = "";
-  const extractionResults = [];
-  let totalCharacters = 0;
-  let successfulExtractions = 0;
+    const documentBuffer = await fs.readFile(filePath);
 
-  for (let i = 0; i < totalFilesToProcess; i++) {
-    const pageFile = pageFiles[i];
-    const pageNumber = i + 1;
-    
-    try {
-      const startTime = Date.now();
-      console.log(`[TEXTRACT] Extrayendo texto de página ${pageNumber}/${totalFilesToProcess}: ${path.basename(pageFile)}`);
-      
-      const pageText = await safeExtractTextFromSingleFile(pageFile, pageNumber);
-      const processingTime = Date.now() - startTime;
-      
-      if (pageText && pageText.trim().length > 0) {
-        combinedText += pageText + " ";
-        totalCharacters += pageText.length;
-        successfulExtractions++;
-        
-        extractionResults.push({
-          page: pageNumber,
-          file: path.basename(pageFile),
-          textLength: pageText.length,
-          processingTimeMs: processingTime,
-          success: true,
-          error: null
-        });
-        
-        console.log(`[TEXTRACT] ✓ Página ${pageNumber}: ${pageText.length} caracteres extraídos en ${processingTime}ms`);
-      } else {
-        extractionResults.push({
-          page: pageNumber,
-          file: path.basename(pageFile),
-          textLength: 0,
-          processingTimeMs: processingTime,
-          success: false,
-          error: "No se extrajo texto válido"
-        });
-        console.warn(`[TEXTRACT] ⚠️ Página ${pageNumber}: No se extrajo texto (${processingTime}ms)`);
+    if (documentBuffer.length > PROCESSING_CONFIG.maxSyncFileSize) {
+      throw new Error(`File too large for sync processing: ${formatBytes(documentBuffer.length)}`);
+    }
+
+    const params = {
+      Document: {
+        Bytes: documentBuffer,
+      },
+    };
+
+    const textractPromise = textract.detectDocumentText(params).promise();
+    const result = await Promise.race([
+      textractPromise,
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('TEXTRACT_SYNC_TIMEOUT')), PROCESSING_CONFIG.syncTimeout)
+      )
+    ]);
+
+    const extractedText = extractTextFromTextractResult(result);
+    const processingTime = Date.now() - startTime;
+
+    console.log(`[TEXTRACT-OPT] ✓ Sync processing completado: ${extractedText.length} caracteres en ${processingTime}ms`);
+
+    return {
+      text: extractedText,
+      method: 'sync',
+      processingTime,
+      metadata: {
+        blockCount: result.Blocks?.length || 0,
+        documentMetadata: result.DocumentMetadata
       }
-    } catch (pageError) {
-      const errorMessage = categorizeTextractError(pageError);
-      extractionResults.push({
-        page: pageNumber,
-        file: path.basename(pageFile),
-        textLength: 0,
-        processingTimeMs: 0,
-        success: false,
-        error: errorMessage
-      });
-      console.error(`[TEXTRACT] ✗ Error en página ${pageNumber}: ${errorMessage}`);
-    }
+    };
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error(`[TEXTRACT-OPT] Error en procesamiento sync después de ${processingTime}ms:`, error.message);
+    throw error;
   }
+}
 
-  if (pageFiles.length > 1) {
-    try {
-      await cleanupSplitFiles(pageFiles, filePath);
-    } catch (cleanupError) {
-      console.warn(`[TEXTRACT] ⚠️ Error en limpieza:`, cleanupError.message);
-    }
-  }
+async function processAsyncS3Document(filePath, documentType, processingId) {
+  const startTime = Date.now();
+  
+  try {
+    console.log(`[TEXTRACT-OPT] Procesamiento asíncrono S3 iniciado`);
 
-  const totalTextLength = combinedText.trim().length;
-  const totalProcessingTime = extractionResults.reduce((sum, r) => sum + (r.processingTimeMs || 0), 0);
-
-  console.log(`[TEXTRACT] Resumen de extracción:`);
-  console.log(`[TEXTRACT]   - Páginas exitosas: ${successfulExtractions}/${totalFilesToProcess}`);
-  console.log(`[TEXTRACT]   - Texto total extraído: ${totalTextLength} caracteres`);
-  console.log(`[TEXTRACT]   - Tiempo total de procesamiento: ${totalProcessingTime}ms`);
-  console.log(`[TEXTRACT]   - Límite de páginas aplicado: ${getMaxPagesLimit()}`);
-
-  if (totalTextLength === 0) {
-    const errorSummary = extractionResults
-      .filter(r => !r.success)
-      .map(r => r.error)
-      .join('; ');
+    const originalFileName = path.basename(filePath);
+    const s3Result = await uploadToS3(filePath, processingId, documentType, originalFileName);
     
-    throw new Error(`NO_TEXT_EXTRACTED: No se extrajo texto de ninguna página. Errores: ${errorSummary}`);
+    console.log(`[TEXTRACT-OPT] ✓ Archivo subido a S3: ${s3Result.key}`);
+
+    if (processingId) {
+      await updateProcessingMetadata(processingId, documentType, {
+        s3Upload: s3Result,
+        status: 'uploaded_for_analysis'
+      });
+    }
+
+    const asyncResult = await processMultiPagePDF(s3Result.key, processingId, documentType);
+    
+    const processingTime = Date.now() - startTime;
+
+    if (!asyncResult.success) {
+      throw new Error(`Async processing failed: ${asyncResult.error}`);
+    }
+
+    console.log(`[TEXTRACT-OPT] ✓ Async processing completado: ${asyncResult.text.length} caracteres en ${processingTime}ms`);
+    console.log(`[TEXTRACT-OPT] Páginas procesadas: ${asyncResult.metadata.pagesProcessed}, Bloques: ${asyncResult.metadata.totalBlocks}`);
+
+    return {
+      text: asyncResult.text,
+      method: 'async-s3',
+      processingTime,
+      metadata: {
+        s3Key: s3Result.key,
+        jobId: asyncResult.metadata.jobId,
+        totalBlocks: asyncResult.metadata.totalBlocks,
+        pagesProcessed: asyncResult.metadata.pagesProcessed,
+        textLength: asyncResult.metadata.textLength
+      }
+    };
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error(`[TEXTRACT-OPT] Error en procesamiento async después de ${processingTime}ms:`, error.message);
+
+    if (processingId) {
+      try {
+        await updateProcessingMetadata(processingId, documentType, {
+          status: 'processing_failed',
+          error: error.message,
+          processingTime
+        });
+      } catch (metadataError) {
+        console.warn(`[TEXTRACT-OPT] No se pudo actualizar metadata con error:`, metadataError.message);
+      }
+    }
+    
+    throw error;
+  }
+}
+
+function extractTextFromTextractResult(result) {
+  if (!result.Blocks || !Array.isArray(result.Blocks)) {
+    return '';
   }
 
-  if (totalTextLength < 50) {
-    console.warn(`[TEXTRACT] ⚠️ Texto extraído muy corto (${totalTextLength} caracteres). Posible problema de calidad.`);
-  }
-
-  if (successfulExtractions < totalFilesToProcess) {
-    console.warn(`[TEXTRACT] ⚠️ Solo ${successfulExtractions} de ${totalFilesToProcess} páginas procesadas exitosamente`);
-  }
-
-  return combinedText.trim();
+  let extractedText = "";
+  let lineCount = 0;
+  let wordCount = 0;
+  
+  result.Blocks.forEach((block) => {
+    if (block.BlockType === "LINE" && block.Text) {
+      extractedText += block.Text + " ";
+      lineCount++;
+      wordCount += (block.Text.match(/\S+/g) || []).length;
+    }
+  });
+  
+  console.log(`[TEXTRACT-OPT] Extracción detallada: ${lineCount} líneas, ${wordCount} palabras`);
+  
+  return extractedText.trim();
 }
 
 async function validateInputFile(filePath) {
@@ -169,14 +268,32 @@ async function validateInputFile(filePath) {
       throw new Error('EMPTY_FILE: El archivo está vacío');
     }
     
-    if (stats.size > 10 * 1024 * 1024) { // 10MB
-      throw new Error(`FILE_TOO_LARGE: Archivo de ${formatBytes(stats.size)} excede el límite de 10MB`);
+    if (stats.size > PROCESSING_CONFIG.maxFileSize) {
+      throw new Error(`FILE_TOO_LARGE: Archivo de ${formatBytes(stats.size)} excede el límite de ${formatBytes(PROCESSING_CONFIG.maxFileSize)}`);
     }
+
+    const ext = path.extname(filePath).toLowerCase();
+    const supportedExtensions = ['.pdf', '.jpg', '.jpeg', '.png', '.tiff', '.tif'];
+    if (!supportedExtensions.includes(ext)) {
+      throw new Error(`UNSUPPORTED_FILE_TYPE: Extensión ${ext} no soportada. Tipos válidos: ${supportedExtensions.join(', ')}`);
+    }
+
   } catch (statsError) {
-    if (statsError.message.includes('FILE_TOO_LARGE') || statsError.message.includes('EMPTY_FILE') || statsError.message.includes('NOT_A_FILE')) {
+    if (statsError.message.includes('FILE_TOO_LARGE') || 
+        statsError.message.includes('EMPTY_FILE') || 
+        statsError.message.includes('NOT_A_FILE') ||
+        statsError.message.includes('UNSUPPORTED_FILE_TYPE')) {
       throw statsError;
     }
     throw new Error(`FILE_STATS_ERROR: Error obteniendo estadísticas - ${statsError.message}`);
+  }
+
+  if ((await fs.stat(filePath)).size <= PROCESSING_CONFIG.maxSyncFileSize) {
+    try {
+      await validateFileContent(filePath);
+    } catch (contentError) {
+      console.warn(`[TEXTRACT-OPT] Content validation warning: ${contentError.message}`);
+    }
   }
 }
 
@@ -214,90 +331,52 @@ async function validateFileContent(filePath) {
   }
 }
 
-async function safeExtractTextFromSingleFile(filePath, pageNumber) {
+async function getFileStats(filePath) {
   try {
-    return await extractTextFromSingleFile(filePath);
+    const stats = await fs.stat(filePath);
+    const extension = path.extname(filePath).toLowerCase();
+    
+    return {
+      size: stats.size,
+      sizeFormatted: formatBytes(stats.size),
+      name: path.basename(filePath),
+      extension,
+      created: stats.birthtime,
+      modified: stats.mtime,
+      isLarge: stats.size > PROCESSING_CONFIG.maxSyncFileSize,
+      isPDF: extension === '.pdf',
+      isImage: ['.jpg', '.jpeg', '.png', '.tiff', '.tif'].includes(extension)
+    };
   } catch (error) {
-    console.error(`[TEXTRACT] Error en página ${pageNumber}:`, error.message);
-    throw error;
-  }
-}
-
-async function extractTextFromSingleFile(filePath) {
-  let documentBuffer;
-  
-  try {
-    documentBuffer = await fs.readFile(filePath);
-  } catch (readError) {
-    throw new Error(`FILE_READ_FAILED: No se pudo leer el archivo - ${readError.message}`);
-  }
-
-  const fileSizeBytes = documentBuffer.length;
-  const maxSizeBytes = 10 * 1024 * 1024; 
-  
-  if (fileSizeBytes > maxSizeBytes) {
-    throw new Error(`DOCUMENT_TOO_LARGE: Archivo de ${formatBytes(fileSizeBytes)} excede el límite de ${formatBytes(maxSizeBytes)}`);
-  }
-  
-  if (fileSizeBytes < 100) {
-    throw new Error(`DOCUMENT_TOO_SMALL: Archivo de ${formatBytes(fileSizeBytes)} es demasiado pequeño para ser válido`);
-  }
-
-  const params = {
-    Document: {
-      Bytes: documentBuffer,
-    },
-  };
-
-  let result;
-  try {
-    const textractPromise = textract.detectDocumentText(params).promise();
-    result = await Promise.race([
-      textractPromise,
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('TEXTRACT_TIMEOUT')), 45000)
-      )
-    ]);
-  } catch (textractError) {
-    throw categorizeTextractError(textractError);
-  }
-
-  let extractedText = "";
-  let lineCount = 0;
-  let wordCount = 0;
-  
-  try {
-    if (result.Blocks && Array.isArray(result.Blocks) && result.Blocks.length > 0) {
-      result.Blocks.forEach((block) => {
-        if (block.BlockType === "LINE" && block.Text) {
-          extractedText += block.Text + " ";
-          lineCount++;
-          wordCount += (block.Text.match(/\S+/g) || []).length;
-        }
-      });
-    }
-    
-    console.log(`[TEXTRACT] Procesamiento exitoso: ${lineCount} líneas, ${wordCount} palabras detectadas`);
-    
-    if (extractedText.trim().length === 0) {
-      throw new Error('NO_TEXT_IN_BLOCKS: Textract no encontró texto legible en el documento');
-    }
-    
-    return extractedText.trim();
-    
-  } catch (processingError) {
-    throw new Error(`TEXT_PROCESSING_ERROR: Error procesando respuesta de Textract - ${processingError.message}`);
+    return {
+      size: 0,
+      sizeFormatted: '0 B',
+      name: path.basename(filePath),
+      extension: '',
+      error: error.message,
+      isLarge: false,
+      isPDF: false,
+      isImage: false
+    };
   }
 }
 
 function categorizeTextractError(error) {
   const errorMessage = error.message || '';
   const errorCode = error.code || '';
-  
-  if (errorMessage === 'TEXTRACT_TIMEOUT') {
-    return new Error('TEXTRACT_TIMEOUT: Tiempo de procesamiento agotado en Textract');
+
+  if (errorMessage.includes('S3_UPLOAD_ERROR')) {
+    return new Error('S3_UPLOAD_FAILED: Error subiendo archivo a S3 para procesamiento');
   }
   
+  if (errorMessage.includes('MULTIPAGE_PDF_ERROR')) {
+    return new Error('PDF_PROCESSING_FAILED: Error procesando PDF multipágina');
+  }
+
+  if (errorMessage === 'TEXTRACT_SYNC_TIMEOUT') {
+    return new Error('TEXTRACT_TIMEOUT: Tiempo de procesamiento sincrónico agotado');
+  }
+
   if (errorCode === 'InvalidParameterException' || errorMessage.includes('InvalidParameter')) {
     return new Error('INVALID_DOCUMENT: El documento no es válido para Textract');
   }
@@ -329,55 +408,6 @@ function categorizeTextractError(error) {
   return new Error(`TEXTRACT_UNKNOWN_ERROR: ${errorMessage}`);
 }
 
-async function cleanupSplitFiles(pageFiles, originalFile) {
-  try {
-    console.log(`[TEXTRACT] Limpiando archivos temporales de páginas divididas...`);
-    
-    let filesDeleted = 0;
-    const errors = [];
-    
-    for (const pageFile of pageFiles) {
-      if (pageFile !== originalFile) {
-        try {
-          await fs.remove(pageFile);
-          filesDeleted++;
-          console.log(`[TEXTRACT] ✓ Eliminado: ${path.basename(pageFile)}`);
-        } catch (deleteError) {
-          errors.push(`${path.basename(pageFile)}: ${deleteError.message}`);
-          console.warn(`[TEXTRACT] ⚠️ No se pudo eliminar ${path.basename(pageFile)}:`, deleteError.message);
-        }
-      }
-    }
-
-    if (pageFiles.length > 1) {
-      const splitDir = path.dirname(pageFiles.find(f => f !== originalFile));
-      if (splitDir && splitDir !== path.dirname(originalFile)) {
-        try {
-          const dirContents = await fs.readdir(splitDir);
-          if (dirContents.length === 0) {
-            await fs.remove(splitDir);
-            console.log(`[TEXTRACT] ✓ Directorio temporal eliminado: ${path.basename(splitDir)}`);
-          } else {
-            console.log(`[TEXTRACT] ⚠️ Directorio temporal no vacío, manteniendo: ${path.basename(splitDir)}`);
-          }
-        } catch (dirError) {
-          errors.push(`Directorio ${path.basename(splitDir)}: ${dirError.message}`);
-          console.warn(`[TEXTRACT] ⚠️ No se pudo limpiar directorio ${splitDir}:`, dirError.message);
-        }
-      }
-    }
-
-    console.log(`[TEXTRACT] ✓ Limpieza completada: ${filesDeleted} archivos temporales eliminados`);
-    
-    if (errors.length > 0) {
-      console.warn(`[TEXTRACT] Errores durante limpieza: ${errors.join('; ')}`);
-    }
-    
-  } catch (error) {
-    console.error(`[TEXTRACT] Error durante limpieza:`, error.message);
-  }
-}
-
 function formatBytes(bytes) {
   try {
     if (bytes === 0) return '0 B';
@@ -392,6 +422,18 @@ function formatBytes(bytes) {
   }
 }
 
+function getProcessingConfig() {
+  return {
+    ...PROCESSING_CONFIG,
+    maxSyncFileSizeFormatted: formatBytes(PROCESSING_CONFIG.maxSyncFileSize),
+    maxFileSizeFormatted: formatBytes(PROCESSING_CONFIG.maxFileSize)
+  };
+}
+
 module.exports = {
   extractTextFromDocument,
+  getProcessingConfig,
+  determineProcessingStrategy,
+  validateInputFile,
+  getFileStats
 };
