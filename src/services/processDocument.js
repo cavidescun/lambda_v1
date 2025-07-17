@@ -4,8 +4,10 @@ const { extractTextFromDocument } = require('./textract');
 const { extractDataTyT } = require('./extractDataDocuments');
 const { updateProcessingMetadata } = require('./s3Service');
 
+// En src/services/processDocument.js, función processDocuments
+
 async function processDocuments(inputData, downloadedFiles, documentUrls, s3ProcessingId = null) {
-  console.log('[PROCESS-OPT] Iniciando procesamiento optimizado con paralelización completa');
+  console.log('[PROCESS-OPT] Iniciando procesamiento optimizado con paralelización mejorada');
 
   let output;
   try {
@@ -28,7 +30,7 @@ async function processDocuments(inputData, downloadedFiles, documentUrls, s3Proc
     { type: 'cedula', field: 'FotocopiaDocumento', priority: 1 },
     { type: 'diploma_bachiller', field: 'DiplomayActaGradoBachiller', priority: 2 },
     { type: 'icfes', field: 'ExamenIcfes_11', priority: 2 },
-    { type: 'prueba_tt', field: 'ResultadoSaberProDelNivelParaGrado', priority: 3 }, // Higher priority for TyT processing
+    { type: 'prueba_tt', field: 'ResultadoSaberProDelNivelParaGrado', priority: 3 },
     { type: 'diploma_tecnico', field: 'DiplomayActaGradoTecnico', priority: 4 },
     { type: 'diploma_tecnologo', field: 'DiplomayActaGradoTecnologo', priority: 4 },
     { type: 'titulo_profesional', field: 'DiplomayActaGradoPregrado', priority: 4 },
@@ -37,28 +39,17 @@ async function processDocuments(inputData, downloadedFiles, documentUrls, s3Proc
     { type: 'acta_homologacion', field: 'Acta_Homologacion', priority: 5 }
   ];
 
-  documentTypes.sort((a, b) => a.priority - b.priority);
-
-  const priorityBatches = [];
-  let currentBatch = [];
-  let currentPriority = null;
-
-  for (const docType of documentTypes) {
-    if (currentPriority !== null && docType.priority !== currentPriority) {
-      if (currentBatch.length > 0) {
-        priorityBatches.push(currentBatch);
-        currentBatch = [];
-      }
+  // Agrupar por prioridad para procesamiento en lotes más eficiente
+  const priorityGroups = {};
+  documentTypes.forEach(docType => {
+    if (!priorityGroups[docType.priority]) {
+      priorityGroups[docType.priority] = [];
     }
-    currentBatch.push(docType);
-    currentPriority = docType.priority;
-  }
-  
-  if (currentBatch.length > 0) {
-    priorityBatches.push(currentBatch);
-  }
+    priorityGroups[docType.priority].push(docType);
+  });
 
-  console.log(`[PROCESS-OPT] Creados ${priorityBatches.length} lotes de procesamiento por prioridad`);
+  const priorityBatches = Object.values(priorityGroups);
+  console.log(`[PROCESS-OPT] Creados ${priorityBatches.length} lotes de procesamiento optimizados`);
 
   let totalProcessed = 0;
   let totalErrors = 0;
@@ -70,6 +61,7 @@ async function processDocuments(inputData, downloadedFiles, documentUrls, s3Proc
     
     console.log(`[PROCESS-OPT] Procesando lote ${batchIndex + 1}/${priorityBatches.length}: ${batch.map(d => d.type).join(', ')}`);
 
+    // Procesar en paralelo completo para lotes del mismo nivel de prioridad
     const batchPromises = batch.map(docType => 
       safeProcessDocumentTypeOptimized(
         documentMap, 
@@ -86,7 +78,16 @@ async function processDocuments(inputData, downloadedFiles, documentUrls, s3Proc
     );
 
     try {
-      const batchResults = await Promise.allSettled(batchPromises);
+      // Usar Promise.allSettled con timeout por lote
+      const batchTimeout = 30000; // 30 segundos por lote
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('BATCH_TIMEOUT')), batchTimeout)
+      );
+
+      const batchResults = await Promise.race([
+        Promise.allSettled(batchPromises),
+        timeoutPromise
+      ]);
       
       batchResults.forEach((result, index) => {
         const docType = batch[index];
@@ -115,15 +116,26 @@ async function processDocuments(inputData, downloadedFiles, documentUrls, s3Proc
       console.log(`[PROCESS-OPT] Lote ${batchIndex + 1} completado en ${batchTime}ms`);
 
     } catch (batchError) {
-      console.error(`[PROCESS-OPT] Error crítico en lote ${batchIndex + 1}:`, batchError.message);
-      totalErrors += batch.length;
+      if (batchError.message === 'BATCH_TIMEOUT') {
+        console.error(`[PROCESS-OPT] Timeout en lote ${batchIndex + 1} después de 30s`);
+        // Marcar todos los documentos del lote como error por timeout
+        batch.forEach(docType => {
+          output[docType.field] = "Error de tiempo - Revision Manual";
+          totalErrors++;
+        });
+      } else {
+        console.error(`[PROCESS-OPT] Error crítico en lote ${batchIndex + 1}:`, batchError.message);
+        totalErrors += batch.length;
+      }
     }
 
+    // Pausa mínima entre lotes para evitar sobrecarga
     if (batchIndex < priorityBatches.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
   }
 
+  // Actualizar metadata final si está disponible S3
   if (s3ProcessingId) {
     try {
       await updateProcessingMetadata(s3ProcessingId, 'processing_summary', {
@@ -139,6 +151,7 @@ async function processDocuments(inputData, downloadedFiles, documentUrls, s3Proc
     }
   }
 
+  // Verificación de integridad final
   try {
     validateOutputIntegrity(output);
     console.log('[PROCESS-OPT] ✓ Integridad del resultado verificada');
@@ -156,7 +169,8 @@ async function processDocuments(inputData, downloadedFiles, documentUrls, s3Proc
       successful: totalProcessed - totalErrors,
       errors: totalErrors,
       s3_processing_id: s3ProcessingId,
-      optimization_used: true
+      optimization_used: true,
+      processing_time_optimized: true
     }
   };
 }

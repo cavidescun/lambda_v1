@@ -62,9 +62,17 @@ function validateInputParameters(text, dictionary, minMatches) {
       return { isValid: false, reason: 'Diccionario está vacío' };
     }
 
+    // Agregar logging para debug
+    console.log(`[VALIDATOR] Diccionario original: ${dictionary.length} entradas`);
+    console.log(`[VALIDATOR] Primeras 5 entradas: ${dictionary.slice(0, 5).map(item => `"${item}"`).join(', ')}`);
+
     sanitizedDictionary = sanitizeDictionary(dictionary);
     
     if (sanitizedDictionary.length === 0) {
+      console.error(`[VALIDATOR] Diccionario vacío después de sanitización. Entradas originales:`);
+      dictionary.forEach((item, index) => {
+        console.error(`[VALIDATOR]   ${index}: "${item}" (tipo: ${typeof item}, length: ${item?.length || 'N/A'})`);
+      });
       return { isValid: false, reason: 'Diccionario no contiene palabras válidas después de sanitización' };
     }
 
@@ -101,6 +109,7 @@ function sanitizeDictionary(dictionary) {
       const item = dictionary[i];
       
       if (item === null || item === undefined) {
+        console.warn(`[VALIDATOR] Saltando item null/undefined en índice ${i}`);
         continue;
       }
       
@@ -111,15 +120,21 @@ function sanitizeDictionary(dictionary) {
         try {
           keyword = String(item).trim().toLowerCase();
         } catch (conversionError) {
-          console.warn(`[VALIDATOR] No se pudo convertir item del diccionario en índice ${i}`);
+          console.warn(`[VALIDATOR] No se pudo convertir item del diccionario en índice ${i}: ${conversionError.message}`);
           continue;
         }
       }
 
-      if (keyword.length >= 2 && keyword.length <= 100) {
-        if (/[a-záéíóúñü]/.test(keyword)) {
+      // Ser más permisivo con la longitud mínima
+      if (keyword.length >= 1 && keyword.length <= 100) {
+        // Verificar que contiene al menos una letra
+        if (/[a-záéíóúñüçA-ZÁÉÍÓÚÑÜÇ0-9]/.test(keyword)) {
           sanitized.push(keyword);
+        } else {
+          console.warn(`[VALIDATOR] Saltando keyword sin caracteres válidos en índice ${i}: "${keyword}"`);
         }
+      } else {
+        console.warn(`[VALIDATOR] Saltando keyword con longitud inválida en índice ${i}: "${keyword}" (length: ${keyword.length})`);
       }
       
     } catch (itemError) {
@@ -130,6 +145,28 @@ function sanitizeDictionary(dictionary) {
   const uniqueKeywords = [...new Set(sanitized)];
   
   console.log(`[VALIDATOR] Diccionario sanitizado: ${uniqueKeywords.length} palabras únicas de ${dictionary.length} originales`);
+  
+  // Si el diccionario sigue vacío, intentar un enfoque más permisivo
+  if (uniqueKeywords.length === 0) {
+    console.warn(`[VALIDATOR] Diccionario vacío después de sanitización, intentando enfoque permisivo`);
+    
+    for (let i = 0; i < dictionary.length; i++) {
+      try {
+        const item = dictionary[i];
+        if (item && String(item).trim().length > 0) {
+          const permissiveKeyword = String(item).trim().toLowerCase();
+          if (permissiveKeyword.length > 0) {
+            uniqueKeywords.push(permissiveKeyword);
+            console.log(`[VALIDATOR] Agregado con enfoque permisivo: "${permissiveKeyword}"`);
+          }
+        }
+      } catch (permissiveError) {
+        console.warn(`[VALIDATOR] Error en enfoque permisivo para índice ${i}:`, permissiveError.message);
+      }
+    }
+    
+    console.log(`[VALIDATOR] Después de enfoque permisivo: ${uniqueKeywords.length} palabras`);
+  }
   
   return uniqueKeywords;
 }
@@ -377,6 +414,23 @@ async function validateTextWithDictionarySimple(text, dictionary, minMatches = 1
 
 async function validateTextWithDictionaryRobust(text, dictionary, minMatches = 1) {
   try {
+    // Manejar casos especiales de documentos no procesables
+    if (text && text.includes('DOCUMENTO_NO_PROCESABLE') || text.includes('DOCUMENTO_PDF_NO_PROCESABLE')) {
+      console.log(`[VALIDATOR] Documento no procesable detectado, usando validación basada en nombre`);
+      return validateDocumentByFilename(text, dictionary);
+    }
+    
+    // Si el diccionario está vacío o es muy pequeño, usar validación más permisiva
+    if (!dictionary || dictionary.length === 0) {
+      console.warn(`[VALIDATOR] Diccionario vacío o null, retornando false`);
+      return false;
+    }
+    
+    if (dictionary.length <= 2) {
+      console.warn(`[VALIDATOR] Diccionario muy pequeño (${dictionary.length} entradas), usando validación permisiva`);
+      return await validateTextWithDictionarySimple(text, dictionary, minMatches);
+    }
+    
     return await validateTextWithDictionary(text, dictionary, minMatches);
   } catch (mainError) {
     console.warn(`[VALIDATOR] Validación principal falló, usando fallback:`, mainError.message);
@@ -389,6 +443,91 @@ async function validateTextWithDictionaryRobust(text, dictionary, minMatches = 1
     }
   }
 }
+
+function validateDocumentByFilename(text, dictionary) {
+  try {
+    console.log(`[VALIDATOR] Validando documento no procesable por nombre de archivo`);
+    
+    // Extraer información del texto de error
+    const textLower = text.toLowerCase();
+    
+    // Buscar coincidencias de palabras clave en el nombre del archivo
+    const fileNameMatches = [];
+    
+    for (const keyword of dictionary) {
+      const keywordLower = String(keyword).toLowerCase().trim();
+      if (keywordLower && textLower.includes(keywordLower)) {
+        fileNameMatches.push(keyword);
+      }
+    }
+    
+    // También verificar términos relacionados comunes
+    const commonTerms = {
+      'bachiller': ['bachiller', 'diploma', 'acta', 'grado'],
+      'tecnologo': ['tecnologo', 'tecnol', 'diploma', 'acta'],
+      'tecnico': ['tecnico', 'tecnica', 'diploma', 'acta'],
+      'cedula': ['cedula', 'identidad', 'documento', 'cc'],
+      'pago': ['pago', 'recibo', 'derechos', 'grado'],
+      'encuesta': ['encuesta', 'seguimiento', 'confirmacion'],
+      'icfes': ['icfes', 'saber', 'resultados', 'examen'],
+      'prueba': ['resultados', 'ek', 'prueba', 'saber']
+    };
+    
+    for (const [category, terms] of Object.entries(commonTerms)) {
+      if (textLower.includes(category)) {
+        for (const term of terms) {
+          const matchingKeywords = dictionary.filter(keyword => 
+            String(keyword).toLowerCase().includes(term)
+          );
+          fileNameMatches.push(...matchingKeywords);
+        }
+      }
+    }
+    
+    const uniqueMatches = [...new Set(fileNameMatches)];
+    
+    if (uniqueMatches.length > 0) {
+      console.log(`[VALIDATOR] Validación por nombre exitosa: ${uniqueMatches.length} coincidencias encontradas`);
+      console.log(`[VALIDATOR] Coincidencias: ${uniqueMatches.slice(0, 3).join(', ')}`);
+      return true;
+    }
+    
+    console.log(`[VALIDATOR] No se encontraron coincidencias en el nombre del archivo`);
+    return false;
+    
+  } catch (error) {
+    console.error(`[VALIDATOR] Error en validación por nombre:`, error.message);
+    return false;
+  }
+}
+
+async function validateDocumentWithExtractionError(text, dictionary, documentType) {
+  try {
+    console.log(`[VALIDATOR] Validando documento con error de extracción: ${documentType}`);
+    
+    // Si el texto indica un error de procesamiento, intentar validación alternativa
+    if (text.includes('DOCUMENTO_NO_PROCESABLE') || 
+        text.includes('error-fallback') || 
+        text.includes('Formato no soportado')) {
+      
+      // Para algunos tipos de documento, podemos ser más permisivos
+      const permissiveTypes = ['recibo_pago', 'encuesta_m0', 'acta_homologacion'];
+      
+      if (permissiveTypes.includes(documentType)) {
+        console.log(`[VALIDATOR] Aplicando validación permisiva para tipo: ${documentType}`);
+        return await validateDocumentByFilename(text, dictionary);
+      }
+    }
+    
+    // Para documentos críticos, requerir validación estricta
+    return await validateTextWithDictionaryRobust(text, dictionary, 1);
+    
+  } catch (error) {
+    console.error(`[VALIDATOR] Error en validación con error de extracción:`, error.message);
+    return false;
+  }
+}
+
 
 function validateDictionaryIntegrity(dictionary, dictionaryName = 'unknown') {
   try {
@@ -519,5 +658,7 @@ module.exports = {
   validateTextWithDictionary: validateTextWithDictionaryRobust,
   validateTextWithDictionarySimple,
   validateDictionaryIntegrity,
-  diagnoseValidationIssue
+  diagnoseValidationIssue,
+  validateDocumentByFilename,
+  validateDocumentWithExtractionError
 };

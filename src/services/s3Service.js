@@ -3,7 +3,6 @@ const fs = require("fs-extra");
 const path = require("path");
 const crypto = require("crypto");
 
-
 const s3 = new AWS.S3({
   apiVersion: 'latest',
   region: process.env.AWS_REGION || 'us-east-1',
@@ -29,12 +28,14 @@ async function initializeS3Processing(requestId) {
   try {
     const timestamp = Date.now();
     const randomId = crypto.randomBytes(8).toString('hex');
-    const processingId = `${requestId}-${timestamp}-${randomId}`;
+    // ✅ CORRECCIÓN: Asegurar que requestId sea string
+    const safeRequestId = String(requestId || 'unknown');
+    const processingId = `${safeRequestId}-${timestamp}-${randomId}`;
     
     console.log(`[S3] Inicializando procesamiento S3: ${processingId}`);
 
     const metadata = {
-      requestId,
+      requestId: safeRequestId,
       processingId,
       timestamp: new Date().toISOString(),
       status: 'initialized',
@@ -52,7 +53,7 @@ async function initializeS3Processing(requestId) {
       ServerSideEncryption: S3_CONFIG.serverSideEncryption,
       Metadata: {
         'processing-id': processingId,
-        'request-id': requestId,
+        'request-id': safeRequestId, // ✅ CORRECCIÓN: Ahora es string
         'created-at': timestamp.toString()
       }
     }).promise();

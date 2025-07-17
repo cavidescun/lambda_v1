@@ -7,6 +7,7 @@ exports.handler = async (event, context) => {
   const startTime = Date.now();
   let requestBody = null;
   let responseToReturn = null;
+  let s3ProcessingId = null;
 
   try {
     console.log("[MAIN] ========================================");
@@ -61,7 +62,6 @@ exports.handler = async (event, context) => {
       console.log("[MAIN] Continuando sin documentos para procesar");
     }
 
-    let s3ProcessingId = null;
     try {
       s3ProcessingId = await initializeS3Processing(
         requestBody.ID || "unknown",
@@ -260,13 +260,14 @@ exports.handler = async (event, context) => {
     console.log("[MAIN] ========================================");
 
     if (s3ProcessingId) {
-    try {
-      await cleanupS3Processing(s3ProcessingId);
-      console.log(`[MAIN] ✓ Archivos S3 limpiados: ${s3ProcessingId}`);
-    } catch (cleanupError) {
-      console.warn(`[MAIN] ⚠️ Error limpiando S3:`, cleanupError.message);
+      try {
+        await cleanupS3Processing(s3ProcessingId);
+        console.log(`[MAIN] ✓ Archivos S3 limpiados: ${s3ProcessingId}`);
+      } catch (cleanupError) {
+        console.warn(`[MAIN] ⚠️ Error limpiando S3:`, cleanupError.message);
+      }
     }
-  }
+    
     if (!responseToReturn) {
       console.error(
         "[MAIN] ⚠️ No se generó respuesta, creando respuesta de emergencia",
