@@ -17,7 +17,7 @@ Esta documentación técnica presenta de manera integral el Sistema de Procesami
 Este documento describe la arquitectura, implementación, despliegue y mantenimiento del Sistema de Procesamiento de Documentos Académicos para grados, facilitando la validación automática de documentos para procesos de graduación en instituciones educativas.
 
 ### 1.2 Alcance
-El sistema permite la descarga automática de documentos desde Google Drive, extracción de texto mediante AWS Textract, validación mediante diccionarios especializados y almacenamiento de resultados en SQL Server.
+El sistema permite la descarga automática de documentos desde Google Drive, extracción de texto mediante AWS Textract, y validación mediante diccionarios especializados.
 
 ---
 
@@ -48,7 +48,6 @@ El sistema permite la descarga automática de documentos desde Google Drive, ext
 - [x] Descarga automática desde Google Drive
 - [x] Extracción de texto con AWS Textract
 - [x] Validación con diccionarios especializados
-- [x] Almacenamiento en base de datos
 - [x] Extracción de datos específicos
 
 ---
@@ -62,7 +61,6 @@ El sistema está basado en una arquitectura serverless en AWS:
 | **AWS Lambda** | Función principal de procesamiento | Node.js 22.x |
 | **AWS Textract** | Extracción de texto de documentos | AWS AI Service |
 | **Google Drive API** | Descarga de documentos | Google APIs |
-| **SQL Server** | Almacenamiento de resultados | Microsoft SQL Server |
 | **Diccionarios** | Validación de contenido | Archivos de texto |
 
 ### Diagrama de Flujo
@@ -98,16 +96,13 @@ flowchart TD
     N --> Q[Construir Response Object]
     J --> Q
     
-    Q --> R[Insertar en Base de Datos]
-    R -->|Success| S[Limpiar Archivos Temporales]
-    R -->|Error| T[Log Error DB]
+    Q --> R[Limpiar Archivos Temporales]
+    R --> S[Retornar Response 200]
     
-    S --> U[Retornar Response 200]
-    T --> V[Retornar Response 500]
-    
-    Z1 --> W[Cleanup y Response Error]
-    Z2 --> W
+    Z1 --> T[Cleanup y Response Error]
+    Z2 --> T
 ```
+
 ### Diagrama Arquitectura de componentes
 
 ```mermaid
@@ -128,7 +123,6 @@ graph TB
                 DICT[dictionaryService.js]
                 VALID[validatorDocuments.js]
                 EXTRACT[extractDataDocuments.js]
-                DB[databaseService.js]
             end
             
             subgraph "Utils"
@@ -149,7 +143,6 @@ graph TB
     
     subgraph "External Services"
         GDRIVE[Google Drive API]
-        SQLSRV[SQL Server Database]
     end
     
     CLI -->|POST Request| MAIN
@@ -167,13 +160,11 @@ graph TB
     DICT --> D4
     PROC --> VALID
     PROC --> EXTRACT
-    MAIN --> DB
-    DB --> SQLSRV
     MAIN --> TEMP
     MAIN --> URL
-
 ```
-### Digrama de secuencia detallado
+
+### Diagrama de secuencia detallado
 ```mermaid
 sequenceDiagram
     participant Client as Cliente/API
@@ -182,7 +173,6 @@ sequenceDiagram
     participant Drive as Google Drive
     participant Textract as AWS Textract
     participant Dict as Dictionary Service
-    participant DB as SQL Server
     
     Client->>Lambda: POST /process-documents
     Lambda->>Lambda: Validar Request Body
@@ -206,8 +196,6 @@ sequenceDiagram
     end
     
     Lambda->>Lambda: Construir objeto respuesta
-    Lambda->>DB: Insertar resultados
-    DB-->>Lambda: Confirmación
     Lambda->>Lambda: Limpiar archivos temporales
     Lambda-->>Client: Response con resultados
 ```
@@ -274,22 +262,21 @@ flowchart TD
     
     M --> N{Error en Validación?}
     N -->|Sí| O[Log + Marcar Revisión Manual]
-    N -->|No| P[Insertar en DB]
-    
-    P --> Q{Error en DB?}
-    Q -->|Sí| R[Log DB Error + Return 500]
-    Q -->|No| S[Cleanup + Return 200]
+    N -->|No| P[Construir Response]
     
     I --> P
     L --> P
     O --> P
     
-    C --> T[Cleanup Resources]
-    F --> T
+    P --> Q[Limpiar Archivos]
+    Q --> R[Return Response 200]
+    
+    C --> S[Cleanup Resources]
+    F --> S
+    S --> T[Fin del Proceso]
     R --> T
-    S --> U[Fin del Proceso]
-    T --> U
 ```
+
 ---
 
 ## 4. Requisitos del Sistema
@@ -302,16 +289,26 @@ flowchart TD
 | RF2 | Extracción de Texto | Extraer texto de documentos PDF e imágenes |
 | RF3 | Validación de Contenido | Validar documentos usando diccionarios especializados |
 | RF4 | Extracción de Datos | Extraer información específica de pruebas TyT |
-| RF5 | Almacenamiento | Guardar resultados en base de datos SQL Server |
+| RF5 | Response Processing | Construir respuesta estructurada con resultados |
 
 ### 4.2 Requisitos No Funcionales
 
-| ID | Requisito | Descripción |
-|----|----|----|
-| RNF1 | Rendimiento | Procesar documentos en menos de 1 minuto |
-| RNF2 | Escalabilidad | Manejar concurrencia de múltiples solicitudes |
-| RNF3 | Disponibilidad | 99.9% de uptime |
-| RNF4 | Seguridad | Manejo seguro de credenciales y datos |
+| ID | Requisito | Descripción | Valor |
+|----|----|----|-----|
+| RNF1 | Tiempo de Procesamiento | Procesar documentos completos | ~30 segundos promedio |
+| RNF2 | Concurrencia | Manejar solicitudes concurrentes | Máximo 60 peticiones/segundo |
+| RNF3 | Disponibilidad | Uptime del servicio | 99.9% |
+| RNF4 | Seguridad | Manejo seguro de credenciales y datos | Cifrado en tránsito |
+| RNF5 | Escalabilidad | Procesamiento paralelo de documentos | Automático con Lambda |
+
+### 4.3 ⚠️ Limitaciones de Concurrencia
+
+| Aspecto | Limitación | Recomendación |
+|---------|------------|---------------|
+| **Rate Limit** | Máximo 60 peticiones por segundo | Implementar throttling en el cliente |
+| **Tiempo de Procesamiento** | ~30 segundos por solicitud | Considerar timeouts en llamadas |
+| **Google Drive API** | 1000 requests/100 segundos/usuario | Monitorear uso de cuotas |
+| **AWS Textract** | 5 TPS por región | Distribuir carga geográficamente |
 
 ---
 
@@ -324,7 +321,7 @@ flowchart TD
 | Sistema Externo | Enviar Documentos | Envía datos con URLs de Google Drive |
 | Lambda Function | Procesar Documentos | Descarga, extrae y valida documentos |
 | AWS Textract | Extraer Texto | Convierte documentos a texto plano |
-| Base de Datos | Almacenar Resultados | Guarda resultados de validación |
+| Response Handler | Construir Respuesta | Estructura resultados de validación |
 
 ### 5.2 Modelo de Datos
 
@@ -332,8 +329,9 @@ flowchart TD
 
 | Entidad | Atributos Principales | Descripción |
 |----|----|----|
-| Documentacion_Mayo2025 | ID, NombreCompleto, TipoDocumento, etc. | Tabla principal de resultados |
-| Diccionarios | Palabras clave por tipo | Archivos de validación |
+| Document Request | ID, NombreCompleto, URLs documentos | Solicitud de procesamiento |
+| Validation Result | Estado, datos extraídos, errores | Resultado de validación |
+| Dictionaries | Palabras clave por tipo | Archivos de validación |
 | Archivos Temporales | Rutas, metadata | Gestión de archivos descargados |
 
 ---
@@ -345,8 +343,7 @@ flowchart TD
 * **Runtime:** Node.js 22.x
 * **AWS Services:** Lambda, Textract
 * **APIs Externas:** Google Drive API v3
-* **Base de Datos:** Microsoft SQL Server
-* **Librerías:** mssql, googleapis, aws-sdk, fs-extra
+* **Librerías:** googleapis, aws-sdk, fs-extra
 
 ### 6.2 Estructura del Código
 
@@ -355,7 +352,6 @@ document-processor-lambda/
 ├── src/
 │   ├── index.js                     # Handler principal
 │   ├── services/
-│   │   ├── databaseService.js       # Conexión SQL Server
 │   │   ├── dictionaryService.js     # Gestión de diccionarios
 │   │   ├── downloadDocuments.js    # Descarga desde Google Drive
 │   │   ├── extractDataDocuments.js # Extracción de datos específicos
@@ -405,13 +401,6 @@ document-processor-lambda/
 GOOGLE_CLIENT_ID=tu_client_id
 GOOGLE_CLIENT_SECRET=tu_client_secret
 GOOGLE_REFRESH_TOKEN=tu_refresh_token
-
-# SQL Server
-SQLSERVER_USERNAME=usuario_db
-SQLSERVER_PASSWORD=password_db
-SQLSERVER_HOST=servidor.database.windows.net
-SQLSERVER_DATABASE=nombre_db
-SQLSERVER_PORT=1433
 ```
 
 ### 7.3 Procedimiento de Despliegue
@@ -422,6 +411,7 @@ SQLSERVER_PORT=1433
 # Construir el paquete de despliegue
 npm run build
 ```
+
 2. Configuración de AWS Lambda:
 ```bash
 # Crear función Lambda
@@ -432,6 +422,7 @@ aws lambda create-function \
   --handler src/index.handler \
   --zip-file fileb://lambda-deployment-prod.zip
 ```
+
 3. Configurar Variables de Entorno:
 ```bash
 # Configurar variables
@@ -460,50 +451,72 @@ aws lambda update-function-configuration \
 }
 ```
 
-5. Pruebas de Despliegue:
-```bash
-# Probar función
-aws lambda invoke \
-  --function-name document-processor \
-  --payload file://test-event.json \
-  response.json
+## 8. Consideraciones de Rendimiento
 
-```
+### 8.1 ⚠️ Limitaciones Críticas
 
-## 8. Pruebas
+| Aspecto | Limitación | Impacto |
+|---------|------------|---------|
+| **Concurrencia Máxima** | 60 requests/segundo | Errores 429 si se excede |
+| **Tiempo de Procesamiento** | 30 segundos promedio | Planificar timeouts acordes |
+| **Google Drive Quota** | 1000 requests/100s | Posibles fallos de descarga |
+| **Textract Limits** | 5 TPS por región | Cuellos de botella en OCR |
 
-### 8.1 Estrategia de Pruebas
+### 8.2 Recomendaciones de Uso
+
+1. **Control de Concurrencia:**
+   - Implementar rate limiting en el cliente
+   - Usar colas para gestionar picos de carga
+   - Monitorear métricas de Lambda
+
+2. **Gestión de Timeouts:**
+   - Cliente: timeout mínimo 35 segundos
+   - API Gateway: configurar timeout 30 segundos
+   - Retry logic para fallos temporales
+
+3. **Optimización de Performance:**
+   - Procesar documentos más pequeños primero
+   - Implementar caché para diccionarios
+   - Monitorear memoria y CPU usage
+
+## 9. Pruebas
+
+### 9.1 Estrategia de Pruebas
 
 - Pruebas Unitarias: Validación de cada servicio individual
 - Pruebas de Integración: Verificar comunicación entre servicios
 - Pruebas de Carga: Evaluar rendimiento bajo múltiples solicitudes
 - Pruebas de Validación: Verificar precisión de extracción de datos
 
-### 8.2 Plan de Pruebas
+### 9.2 Plan de Pruebas
+
 | Tipo de Prueba | Objetivo | Herramienta |
 |----|----|----|
 | Funcionales | Verificar procesamiento correcto | Postman, curl |
 | Rendimiento | Evaluar tiempos de respuesta | AWS CloudWatch |
+| Concurrencia | Probar limits de 60 req/sec | Artillery, JMeter |
 | Validación | Comprobar precisión de extracción | Casos de prueba manuales |
-| Seguridad | Verificar manejo de credenciales AWS | IAM Analyzer |
 
-### 8.3 Casos de Prueba Críticos
+### 9.3 Casos de Prueba Críticos
+
 | Caso | Descripción | Resultado Esperado |
 |----|----|----|
 | TC001 | Procesar cédula válida | "Documento Valido" |
 | TC002 | Procesar prueba TyT | Extraer código EK correctamente |
 | TC003 | Documento inválido | "Revision Manual" |
 | TC004 | URL de Google Drive incorrecta | Error controlado |
+| TC005 | Test de concurrencia (60 req/sec) | Sin errores 429 |
 
-## 9. Mantenimiento
+## 10. Mantenimiento
 
-### 9.1 Estrategia de Mantenimiento
+### 10.1 Estrategia de Mantenimiento
 
 - Mantenimiento Correctivo: Corrección de errores en validaciones
 - Mantenimiento Preventivo: Actualización de diccionarios y credenciales
 - Mantenimiento Evolutivo: Nuevos tipos de documentos y validaciones
 
-### 9.2 Monitoreo y Logs
+### 10.2 Monitoreo y Logs
+
 **CloudWatch Logs**
 Los logs están organizados por prefijos:
 
@@ -512,30 +525,31 @@ Los logs están organizados por prefijos:
 - [TEXTRACT] - Extracción de texto con AWS Textract
 - [PROCESS] - Procesamiento de documentos
 - [DICT] - Validación con diccionarios
-- [DB] - Operaciones de base de datos
 
 **Métricas Importantes**
 | Métrica | Descripción | Umbral |
 |----|----|----|
 | Duración | Tiempo de ejecución | < 40 segundos |
 | Errores | Fallos en procesamiento | < 5% |
-| Memoria | Uso de memoria | < 400 MB|
+| Memoria | Uso de memoria | < 400 MB |
 | Invocaciones | Número de ejecuciones | Monitoreo continuo |
+| Concurrencia | Requests simultáneos | < 60/segundo |
 
-### 9.3 Registro de Cambios (Changelog)
+### 10.3 Registro de Cambios (Changelog)
+
 | Versión | Fecha | Descripción | Responsable |
 |----|----|----|----|
-|1.0.0 | 01/06/2025 | Versión inicial de lanzamiento | Camilo Vides |
+| 1.0.0 | 01/06/2025 | Versión inicial de lanzamiento | Camilo Vides |
 
+## 11. API Reference
 
-## 10. API Reference
-
-### 10.1 Endpoint Principal
+### 11.1 Endpoint Principal
 ```
 POST /process-documents
 Content-Type: application/json
 ```
-### 10.2 Request Body
+
+### 11.2 Request Body
 ```json
 {
   "ID": 2521,
@@ -573,10 +587,9 @@ Content-Type: application/json
   "Recibo_de_pago_derechos_de_grado": null,
   "Autorizacion_tratamiento_de_datos": "Agreed"
 }
-
 ```
 
-### 10.3 Response Body
+### 11.3 Response Body
 ```json
 {
   "ID": 2521,
@@ -608,57 +621,81 @@ Content-Type: application/json
   "Acta_Homologacion": "Documento no adjunto"
 }
 ```
-## 11. Solución de Problemas
 
-### 11.1 Errores Comunes
+## 12. Solución de Problemas
+
+### 12.1 Errores Comunes
+
 | Error | Causa | Solución |
 |----|----|----|
-| PERMISSION_DENIEDS | in permisos en Google Drive | Verificar compartido del archivo |
+| PERMISSION_DENIED | Sin permisos en Google Drive | Verificar compartido del archivo |
 | NO_TEXT_EXTRACTED | Textract no extrajo texto | Verificar calidad del documento |
 | AUTH_DOWNLOAD_ERROR | Credenciales Google inválidas | Regenerar refresh token |
-| DB_CONNECTION_ERROR | Fallo en SQL Server | Verificar credenciales y conectividad |
+| RATE_LIMIT_EXCEEDED | Excedido límite de 60 req/sec | Implementar throttling |
+| TIMEOUT_ERROR | Procesamiento > 30 segundos | Revisar tamaño de documentos |
 
-### 11.2 Validación de Documentos
+### 12.2 Validación de Documentos
+
 **Estados de Validación**
 | Estado | Descripción |
 |----|----|
-| "Documento Valido"| Pasó todas las validaciones | 
+| "Documento Valido" | Pasó todas las validaciones |
 | "Revision Manual" | Requiere verificación humana |
-| "N/A" | No aplica para este nivel | 
+| "N/A" | No aplica para este nivel |
 | "Documento no adjunto" | No se proporcionó URL |
 
-## 12. Seguridad
-### 12.1 Manejo de Credenciales
+### 12.3 ⚠️ Manejo de Concurrencia
+
+**Recomendaciones para evitar problemas:**
+1. No enviar más de 60 requests por segundo
+2. Implementar retry logic con backoff exponencial
+3. Monitorear CloudWatch para errores de throttling
+4. Usar colas para gestionar picos de demanda
+
+## 13. Seguridad
+
+### 13.1 Manejo de Credenciales
 
 - Variables de entorno para credenciales sensibles
 - Rotación periódica de tokens de Google
 - Cifrado en tránsito y en reposo
 - Principio de menor privilegio en IAM
 
-### 12.2 Validación de Entrada
+### 13.2 Validación de Entrada
 
 - Sanitización de URLs de Google Drive
 - Validación de tipos de archivo
 - Límites de tamaño de documento (10MB)
 - Control de timeout en operaciones
 
+## 14. Conclusiones
 
-## 13. Conclusiones
 Esta documentación proporciona una visión completa del sistema de procesamiento de documentos académicos. El sistema automatiza eficientemente la validación de documentos educativos, reduciendo significativamente el tiempo de procesamiento y mejorando la precisión de las validaciones.
-Recomendaciones:
+
+**Recomendaciones:**
 
 - Mantener actualizados los diccionarios de validación
 - Monitorear regularmente las métricas de CloudWatch
+- Respetar los límites de concurrencia (60 req/sec)
 - Realizar pruebas periódicas con diferentes tipos de documentos
 - Documentar cualquier nuevo tipo de documento que se agregue
 
+**⚠️ Notas Importantes de Operación:**
 
-Notas Adicionales:
+- **Tiempo de procesamiento:** ~30 segundos por solicitud
+- **Límite de concurrencia:** Máximo 60 peticiones por segundo
+- **Timeout recomendado:** 35 segundos en el cliente
+- **Monitoreo continuo:** Esencial para detectar degradación del servicio
+
+**Notas Adicionales:**
 
 - URL de Producción: [Lambda Function URL](https://64npbyhrg3eodw5zh7ofxtu5yq0udymm.lambda-url.us-east-1.on.aws/)
 - Contacto de Soporte: Fabrica de software
 - Repositorio: Disponible en control de versiones interno
 
+---
 
-Versión: 1.0.0
-Última actualización: Junio 2025
+**Versión**: 1.0.0  
+**Última actualización**: Junio 2025
+
+---
