@@ -679,7 +679,7 @@ function determineErrorMessage(errorString) {
     } else if (error.includes('textract_timeout')) {
       return "Tiempo de análisis agotado - Revision Manual";
     } else {
-      return "Error en procesamiento - Revision Manual";
+      return "Revision Manual";
     }
   } catch (msgError) {
     return "Error desconocido - Revision Manual";

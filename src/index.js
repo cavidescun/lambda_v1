@@ -39,6 +39,7 @@ exports.handler = async (event, context) => {
         "[MAIN] ✗ Error procesando request body:",
         parseError.message,
       );
+      
       requestBody = {
         ID: "parse_error",
         Nombre_completo: "Error en parseo",
@@ -51,7 +52,10 @@ exports.handler = async (event, context) => {
     try {
       documentsUrl = extractDocumentUrls(requestBody);
       const urlCount = Object.keys(documentsUrl).length;
+
+
       console.log(`[MAIN] ✓ ${urlCount} URL(s) de documentos extraídas`);
+
       if (urlCount === 0) {
         console.warn("[MAIN] ⚠️ No se encontraron URLs de documentos válidas");
       }
@@ -80,40 +84,11 @@ exports.handler = async (event, context) => {
         const remainingTime = context.getRemainingTimeInMillis();
 
         console.log(
-          `[MAIN] Iniciando descarga optimizada de documentos (tiempo restante: ${remainingTime}ms)`,
+
+          `[MAIN] Iniciando descarga de documentos (tiempo restante: ${remainingTime}ms)`,
         );
 
         downloadedFiles = await downloadDocuments(Object.values(documentsUrl));
-
-        if (s3ProcessingId) {
-          downloadedFiles.forEach((file, index) => {
-            if (file.status === "success") {
-              const docType = Object.keys(documentsUrl)[index];
-              const uploadPromise = uploadToS3(
-                file.path,
-                s3ProcessingId,
-                docType,
-                file.fileName,
-              )
-                .then((s3Result) => {
-                  file.s3Info = s3Result;
-                  console.log(
-                    `[MAIN] ✓ ${file.fileName} subido a S3: ${s3Result.key}`,
-                  );
-                  return s3Result;
-                })
-                .catch((uploadError) => {
-                  console.error(
-                    `[MAIN] ✗ Error subiendo ${file.fileName} a S3:`,
-                    uploadError.message,
-                  );
-                  file.s3Error = uploadError.message;
-                  return null;
-                });
-              s3UploadPromises.push(uploadPromise);
-            }
-          });
-        }
 
         const downloadTime = Date.now() - downloadStartTime;
         const successfulDownloads = downloadedFiles.filter(
@@ -144,6 +119,7 @@ exports.handler = async (event, context) => {
         status: "error",
         error: `DOWNLOAD_SYSTEM_ERROR: ${downloadError.message}`,
       }));
+      
       console.log("[MAIN] Continuando con archivos marcados como error");
     }
 
@@ -152,15 +128,13 @@ exports.handler = async (event, context) => {
 
     try {
       const remainingTime = context.getRemainingTimeInMillis();
-      console.log(
-        `[MAIN] Iniciando procesamiento optimizado de documentos (tiempo restante: ${remainingTime}ms)`,
+
       );
 
       result = await processDocuments(
         requestBody,
         downloadedFiles,
         documentsUrl,
-        s3ProcessingId,
       );
 
       const processTime = Date.now() - processStartTime;
@@ -255,18 +229,18 @@ exports.handler = async (event, context) => {
       request_id: requestBody?.ID || "unknown",
     });
   } finally {
+    try {
+      await cleanupTempFiles();
+      console.log("[MAIN] ✓ Limpieza de archivos temporales completada");
+    } catch (cleanupError) {
+      console.error("[MAIN] ⚠️ Error en limpieza:", cleanupError.message);
+      // No afecta la respuesta, solo logging
+    }
+
     const finalTime = Date.now() - startTime;
     console.log(`[MAIN] Proceso finalizado - Tiempo total: ${finalTime}ms`);
     console.log("[MAIN] ========================================");
 
-    if (s3ProcessingId) {
-    try {
-      await cleanupS3Processing(s3ProcessingId);
-      console.log(`[MAIN] ✓ Archivos S3 limpiados: ${s3ProcessingId}`);
-    } catch (cleanupError) {
-      console.warn(`[MAIN] ⚠️ Error limpiando S3:`, cleanupError.message);
-    }
-  }
     if (!responseToReturn) {
       console.error(
         "[MAIN] ⚠️ No se generó respuesta, creando respuesta de emergencia",
@@ -392,14 +366,13 @@ function formatResponse(statusCode, body) {
       "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "X-Request-Time": new Date().toISOString(),
-      "X-Lambda-Function": "document-processor-optimized",
+      "X-Lambda-Function": "document-processor",
       "X-Error-Handling": "ROBUST_MODE",
     },
     body: JSON.stringify(safeBody, null, statusCode >= 400 ? 2 : 0),
   };
 
   console.log(`[MAIN] Respuesta generada - Status: ${statusCode}`);
-
   if (statusCode >= 400) {
     console.error(
       `[MAIN] Respuesta de error: ${JSON.stringify(safeBody, null, 2)}`,
