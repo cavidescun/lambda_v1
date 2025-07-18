@@ -4,7 +4,6 @@ const os = require("os");
 const crypto = require("crypto");
 
 const tempDirectories = [];
-
 async function createTempDirectory() {
   const timestamp = Date.now();
   const nanoTime = process.hrtime.bigint().toString();

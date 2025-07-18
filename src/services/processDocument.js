@@ -2,71 +2,514 @@ const { getDictionaryForDocumentType } = require('./dictionaryService');
 const { validateTextWithDictionary} = require('./validatorDocuments');
 const { extractTextFromDocument } = require('./textract');
 const { extractDataTyT } = require('./extractDataDocuments');
+const { updateProcessingMetadata } = require('./s3Service');
 
-async function processDocuments(inputData, downloadedFiles, documentUrls) {
-  console.log('[PROCESS] Iniciando procesamiento robusto de documentos');
+async function processDocuments(inputData, downloadedFiles, documentUrls, s3ProcessingId = null) {
+  console.log('[PROCESS-OPT] Iniciando procesamiento optimizado con paralelización completa');
 
   let output;
   try {
     output = createSafeOutputStructure(inputData);
   } catch (structureError) {
-    console.error('[PROCESS] Error creando estructura de salida:', structureError.message);
+    console.error('[PROCESS-OPT] Error creando estructura de salida:', structureError.message);
     output = createEmergencyOutputStructure(inputData);
   }
 
   let documentMap = {};
   try {
     documentMap = createDocumentMap(downloadedFiles, documentUrls);
-    console.log(`[PROCESS] Mapa de documentos creado: ${Object.keys(documentMap).length} documentos`);
+    console.log(`[PROCESS-OPT] Mapa de documentos creado: ${Object.keys(documentMap).length} documentos`);
   } catch (mapError) {
-    console.error('[PROCESS] Error creando mapa de documentos:', mapError.message);
-    documentMap = {}; // Continuar con mapa vacío
+    console.error('[PROCESS-OPT] Error creando mapa de documentos:', mapError.message);
+    documentMap = {};
   }
 
-  const processingPromises = [
-    safeProcessDocumentType(documentMap, 'cedula', output, 'FotocopiaDocumento', inputData),
-    safeProcessDocumentType(documentMap, 'diploma_bachiller', output, 'DiplomayActaGradoBachiller', inputData),
-    safeProcessDocumentType(documentMap, 'diploma_tecnico', output, 'DiplomayActaGradoTecnico', inputData),
-    safeProcessDocumentType(documentMap, 'diploma_tecnologo', output, 'DiplomayActaGradoTecnologo', inputData),
-    safeProcessDocumentType(documentMap, 'titulo_profesional', output, 'DiplomayActaGradoPregrado', inputData),
-    safeProcessDocumentType(documentMap, 'prueba_tt', output, 'ResultadoSaberProDelNivelParaGrado', inputData),
-    safeProcessDocumentType(documentMap, 'icfes', output, 'ExamenIcfes_11', inputData),
-    safeProcessDocumentType(documentMap, 'recibo_pago', output, 'RecibiDePagoDerechosDeGrado', inputData),
-    safeProcessDocumentType(documentMap, 'encuesta_m0', output, 'Encuesta_M0', inputData),
-    safeProcessDocumentType(documentMap, 'acta_homologacion', output, 'Acta_Homologacion', inputData),
+  const documentTypes = [
+    { type: 'cedula', field: 'FotocopiaDocumento', priority: 1 },
+    { type: 'diploma_bachiller', field: 'DiplomayActaGradoBachiller', priority: 2 },
+    { type: 'icfes', field: 'ExamenIcfes_11', priority: 2 },
+    { type: 'prueba_tt', field: 'ResultadoSaberProDelNivelParaGrado', priority: 3 }, // Higher priority for TyT processing
+    { type: 'diploma_tecnico', field: 'DiplomayActaGradoTecnico', priority: 4 },
+    { type: 'diploma_tecnologo', field: 'DiplomayActaGradoTecnologo', priority: 4 },
+    { type: 'titulo_profesional', field: 'DiplomayActaGradoPregrado', priority: 4 },
+    { type: 'recibo_pago', field: 'RecibiDePagoDerechosDeGrado', priority: 5 },
+    { type: 'encuesta_m0', field: 'Encuesta_M0', priority: 5 },
+    { type: 'acta_homologacion', field: 'Acta_Homologacion', priority: 5 }
   ];
 
-  try {
-    console.log('[PROCESS] Ejecutando procesamiento en paralelo de 10 tipos de documentos');
-    const results = await Promise.allSettled(processingPromises);
+  documentTypes.sort((a, b) => a.priority - b.priority);
 
-    const successful = results.filter(r => r.status === 'fulfilled').length;
-    const failed = results.filter(r => r.status === 'rejected').length;
-    
-    console.log(`[PROCESS] Resultados del procesamiento: ${successful} exitosos, ${failed} fallidos`);
+  const priorityBatches = [];
+  let currentBatch = [];
+  let currentPriority = null;
 
-    results.forEach((result, index) => {
-      if (result.status === 'rejected') {
-        const docTypes = ['cedula', 'diploma_bachiller', 'diploma_tecnico', 'diploma_tecnologo', 
-                         'titulo_profesional', 'prueba_tt', 'icfes', 'recibo_pago', 'encuesta_m0', 'acta_homologacion'];
-        console.error(`[PROCESS] Error en ${docTypes[index]}: ${result.reason?.message || 'Error desconocido'}`);
+  for (const docType of documentTypes) {
+    if (currentPriority !== null && docType.priority !== currentPriority) {
+      if (currentBatch.length > 0) {
+        priorityBatches.push(currentBatch);
+        currentBatch = [];
       }
-    });
+    }
+    currentBatch.push(docType);
+    currentPriority = docType.priority;
+  }
+  
+  if (currentBatch.length > 0) {
+    priorityBatches.push(currentBatch);
+  }
+
+  console.log(`[PROCESS-OPT] Creados ${priorityBatches.length} lotes de procesamiento por prioridad`);
+
+  let totalProcessed = 0;
+  let totalErrors = 0;
+  const processingResults = {};
+
+  for (let batchIndex = 0; batchIndex < priorityBatches.length; batchIndex++) {
+    const batch = priorityBatches[batchIndex];
+    const batchStartTime = Date.now();
     
-  } catch (parallelError) {
-    console.error('[PROCESS] Error crítico en procesamiento paralelo:', parallelError.message);
+    console.log(`[PROCESS-OPT] Procesando lote ${batchIndex + 1}/${priorityBatches.length}: ${batch.map(d => d.type).join(', ')}`);
+
+    const batchPromises = batch.map(docType => 
+      safeProcessDocumentTypeOptimized(
+        documentMap, 
+        docType.type, 
+        output, 
+        docType.field, 
+        inputData, 
+        s3ProcessingId
+      ).then(result => ({
+        ...result,
+        documentType: docType.type,
+        outputField: docType.field
+      }))
+    );
+
+    try {
+      const batchResults = await Promise.allSettled(batchPromises);
+      
+      batchResults.forEach((result, index) => {
+        const docType = batch[index];
+        if (result.status === 'fulfilled') {
+          processingResults[docType.type] = result.value;
+          totalProcessed++;
+          
+          if (result.value.success) {
+            console.log(`[PROCESS-OPT] ✓ ${docType.type}: ${result.value.status || 'procesado'}`);
+          } else {
+            console.warn(`[PROCESS-OPT] ⚠️ ${docType.type}: ${result.value.error || 'error'}`);
+            totalErrors++;
+          }
+        } else {
+          processingResults[docType.type] = {
+            success: false,
+            error: result.reason?.message || 'Error desconocido',
+            documentType: docType.type
+          };
+          totalErrors++;
+          console.error(`[PROCESS-OPT] ✗ ${docType.type}: ${result.reason?.message || 'Error crítico'}`);
+        }
+      });
+
+      const batchTime = Date.now() - batchStartTime;
+      console.log(`[PROCESS-OPT] Lote ${batchIndex + 1} completado en ${batchTime}ms`);
+
+    } catch (batchError) {
+      console.error(`[PROCESS-OPT] Error crítico en lote ${batchIndex + 1}:`, batchError.message);
+      totalErrors += batch.length;
+    }
+
+    if (batchIndex < priorityBatches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  if (s3ProcessingId) {
+    try {
+      await updateProcessingMetadata(s3ProcessingId, 'processing_summary', {
+        totalDocuments: documentTypes.length,
+        processedSuccessfully: totalProcessed - totalErrors,
+        errors: totalErrors,
+        processingResults,
+        completedAt: new Date().toISOString(),
+        status: totalErrors === 0 ? 'all_successful' : totalErrors < totalProcessed ? 'partial_success' : 'mostly_failed'
+      });
+    } catch (metadataError) {
+      console.warn(`[PROCESS-OPT] No se pudo actualizar metadata final:`, metadataError.message);
+    }
   }
 
   try {
     validateOutputIntegrity(output);
-    console.log('[PROCESS] ✓ Integridad del resultado verificada');
+    console.log('[PROCESS-OPT] ✓ Integridad del resultado verificada');
   } catch (integrityError) {
-    console.error('[PROCESS] Error de integridad:', integrityError.message);
+    console.error('[PROCESS-OPT] Error de integridad:', integrityError.message);
     repairOutputStructure(output, inputData);
   }
 
-  console.log('[PROCESS] Procesamiento completado exitosamente');
-  return output;
+  console.log(`[PROCESS-OPT] Procesamiento completado: ${totalProcessed - totalErrors}/${totalProcessed} exitosos`);
+  
+  return {
+    ...output,
+    processing_summary: {
+      total_documents: totalProcessed,
+      successful: totalProcessed - totalErrors,
+      errors: totalErrors,
+      s3_processing_id: s3ProcessingId,
+      optimization_used: true
+    }
+  };
+}
+
+
+async function safeProcessDocumentTypeOptimized(documentMap, docType, output, outputField, inputData, s3ProcessingId) {
+  const startTime = Date.now();
+  
+  try {
+    console.log(`[PROCESS-OPT] Procesando documento optimizado: ${docType}`);
+
+    if (!output || typeof output !== 'object') {
+      throw new Error(`Output object invalid for ${docType}`);
+    }
+    
+    if (!outputField || typeof outputField !== 'string') {
+      throw new Error(`Output field invalid for ${docType}`);
+    }
+    
+    const result = await processDocumentTypeOptimized(documentMap, docType, output, outputField, inputData, s3ProcessingId);
+    
+    const processingTime = Date.now() - startTime;
+    return {
+      success: true,
+      documentType: docType,
+      processingTime,
+      ...result
+    };
+    
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error(`[PROCESS-OPT] Error crítico procesando ${docType} después de ${processingTime}ms:`, error.message);
+
+    try {
+      if (output && outputField) {
+        const errorMessage = determineErrorMessage(error.message);
+        output[outputField] = errorMessage;
+
+        if (s3ProcessingId) {
+          await updateProcessingMetadata(s3ProcessingId, docType, {
+            status: 'processing_error',
+            error: error.message,
+            processingTime,
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+    } catch (assignError) {
+      console.error(`[PROCESS-OPT] Error asignando valor de error para ${docType}:`, assignError.message);
+    }
+    
+    return {
+      success: false,
+      error: error.message,
+      documentType: docType,
+      processingTime
+    };
+  }
+}
+
+
+async function processDocumentTypeOptimized(documentMap, docType, output, outputField, inputData, s3ProcessingId) {
+  try {
+    const file = documentMap[docType];
+
+    if (!file) {
+      console.log(`[PROCESS-OPT] No se encontró archivo para tipo: ${docType}`);
+      output[outputField] = "Documento no adjunto";
+      
+      if (s3ProcessingId) {
+        await updateProcessingMetadata(s3ProcessingId, docType, {
+          status: 'not_provided',
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      return { status: 'not_provided' };
+    }
+
+    if (file.status === 'error') {
+      console.error(`[PROCESS-OPT] Error en descarga para ${docType}: ${file.error}`);
+      const errorMessage = determineErrorMessage(file.error);
+      output[outputField] = errorMessage;
+      
+      if (s3ProcessingId) {
+        await updateProcessingMetadata(s3ProcessingId, docType, {
+          status: 'download_error',
+          error: file.error,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      return { status: 'download_error', error: file.error };
+    }
+
+    console.log(`[PROCESS-OPT] Archivo encontrado: ${file.fileName} (${formatBytes(file.size)})`);
+
+    if (s3ProcessingId) {
+      await updateProcessingMetadata(s3ProcessingId, docType, {
+        status: 'processing_started',
+        fileName: file.fileName,
+        fileSize: file.size,
+        startTime: new Date().toISOString()
+      });
+    }
+
+    let extractedText = '';
+    let textExtractionMethod = 'unknown';
+    
+    try {
+      const textStartTime = Date.now();
+      extractedText = await extractTextFromDocument(file.path, docType, s3ProcessingId);
+      const textExtractionTime = Date.now() - textStartTime;
+      
+      console.log(`[PROCESS-OPT] Texto extraído para ${docType}: ${extractedText.length} caracteres en ${textExtractionTime}ms`);
+      
+      if (s3ProcessingId) {
+        await updateProcessingMetadata(s3ProcessingId, docType, {
+          textExtracted: true,
+          textLength: extractedText.length,
+          textExtractionTime,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+    } catch (textError) {
+      console.error(`[PROCESS-OPT] Error extrayendo texto de ${docType}:`, textError.message);
+      output[outputField] = `Error en extracción de texto - Revision Manual`;
+      
+      if (s3ProcessingId) {
+        await updateProcessingMetadata(s3ProcessingId, docType, {
+          status: 'text_extraction_error',
+          error: textError.message,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      return { status: 'text_extraction_error', error: textError.message };
+    }
+
+    let isValid = false;
+    let validationDetails = {};
+    
+    try {
+      const validationStartTime = Date.now();
+      const dictionary = await getDictionaryForDocumentType(docType);
+      isValid = await validateTextWithDictionary(extractedText, dictionary);
+      const validationTime = Date.now() - validationStartTime;
+      
+      validationDetails = {
+        isValid,
+        dictionarySize: dictionary.length,
+        validationTime
+      };
+      
+      console.log(`[PROCESS-OPT] Validación ${docType}: ${isValid ? 'VÁLIDO' : 'INVÁLIDO'} en ${validationTime}ms`);
+      
+      if (s3ProcessingId) {
+        await updateProcessingMetadata(s3ProcessingId, docType, {
+          validationCompleted: true,
+          isValid,
+          validationTime,
+          dictionarySize: dictionary.length,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+    } catch (validationError) {
+      console.error(`[PROCESS-OPT] Error en validación de ${docType}:`, validationError.message);
+      output[outputField] = `Error en validación - Revision Manual`;
+      
+      if (s3ProcessingId) {
+        await updateProcessingMetadata(s3ProcessingId, docType, {
+          status: 'validation_error',
+          error: validationError.message,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      return { status: 'validation_error', error: validationError.message };
+    }
+
+    if (isValid) {
+      if (docType === 'prueba_tt') {
+        try {
+          await safeProcessTyTDocumentOptimized(extractedText, output, inputData, s3ProcessingId);
+        } catch (tytError) {
+          console.error(`[PROCESS-OPT] Error procesando TyT:`, tytError.message);
+        }
+      }
+      
+      output[outputField] = "Documento Valido";
+      console.log(`[PROCESS-OPT] ${docType} marcado como VÁLIDO`);
+      
+      if (s3ProcessingId) {
+        await updateProcessingMetadata(s3ProcessingId, docType, {
+          status: 'completed_valid',
+          finalStatus: 'Documento Valido',
+          completedAt: new Date().toISOString()
+        });
+      }
+      
+      return { 
+        status: 'valid', 
+        validation: validationDetails,
+        textLength: extractedText.length
+      };
+      
+    } else {
+      output[outputField] = "Revision Manual";
+      console.log(`[PROCESS-OPT] ${docType} marcado para REVISIÓN MANUAL`);
+      
+      if (s3ProcessingId) {
+        await updateProcessingMetadata(s3ProcessingId, docType, {
+          status: 'completed_manual_review',
+          finalStatus: 'Revision Manual',
+          completedAt: new Date().toISOString()
+        });
+      }
+      
+      return { 
+        status: 'manual_review', 
+        validation: validationDetails,
+        textLength: extractedText.length
+      };
+    }
+    
+  } catch (error) {
+    console.error(`[PROCESS-OPT] Error procesando ${docType}:`, error.message);
+    const errorMessage = determineErrorMessage(error.message);
+    output[outputField] = errorMessage;
+    
+    if (s3ProcessingId) {
+      await updateProcessingMetadata(s3ProcessingId, docType, {
+        status: 'processing_failed',
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    return { status: 'processing_error', error: error.message };
+  }
+}
+
+async function safeProcessTyTDocumentOptimized(extractedText, output, inputData, s3ProcessingId) {
+  try {
+    console.log(`[PROCESS-OPT] Extrayendo datos específicos de TyT con optimización`);
+    
+    const tytStartTime = Date.now();
+    const dataTyT = await extractDataTyT(extractedText);
+    const tytProcessingTime = Date.now() - tytStartTime;
+
+    const hasValidData = dataTyT.registroEK || dataTyT.numDocumento || 
+                        dataTyT.fechaPresentacion || dataTyT.programa || dataTyT.institucion;
+    
+    if (!hasValidData) {
+      setTyTManualExtraction(output, 'Sin datos extraíbles');
+      
+      if (s3ProcessingId) {
+        await updateProcessingMetadata(s3ProcessingId, 'prueba_tt_extraction', {
+          status: 'no_extractable_data',
+          processingTime: tytProcessingTime,
+          timestamp: new Date().toISOString()
+        });
+      }
+      return;
+    }
+
+    output.EK = safeCopy(dataTyT.registroEK, 'Extraccion Manual');
+    output.Num_Documento_Extraido = safeCopy(dataTyT.numDocumento, 'Extraccion Manual');
+    output.Fecha_Presentacion_Extraida = safeCopy(dataTyT.fechaPresentacion, 'Extraccion Manual');
+    output.Programa_Extraido = safeCopy(dataTyT.programa, 'Extraccion Manual');
+    output.Institucion_Extraida = safeCopy(dataTyT.institucion, 'Extraccion Manual');
+    
+    const extractionSummary = {
+      EK: dataTyT.registroEK ? 'extracted' : 'manual',
+      numDoc: dataTyT.numDocumento ? 'extracted' : 'manual',
+      fecha: dataTyT.fechaPresentacion ? 'extracted' : 'manual',
+      programa: dataTyT.programa ? 'extracted' : 'manual',
+      institucion: dataTyT.institucion ? 'extracted' : 'manual'
+    };
+
+    console.log(`[PROCESS-OPT] Datos TyT extraídos:`, extractionSummary);
+
+    try {
+      const inputDocNumber = safeCopy(inputData?.Numero_de_Documento, '');
+      const extractedDocNumber = safeCopy(dataTyT.numDocumento, '');
+      
+      if (extractedDocNumber && inputDocNumber && extractedDocNumber === inputDocNumber) {
+        output.Num_Doc_Valido = 'Valido';
+        console.log(`[PROCESS-OPT] Número de documento COINCIDE`);
+      } else {
+        output.Num_Doc_Valido = 'Revision Manual';
+        console.log(`[PROCESS-OPT] Número de documento NO COINCIDE: ${extractedDocNumber} vs ${inputDocNumber}`);
+      }
+    } catch (docValidationError) {
+      console.error(`[PROCESS-OPT] Error validando número de documento:`, docValidationError.message);
+      output.Num_Doc_Valido = 'Error en validación';
+    }
+
+    try {
+      if (dataTyT.institucion) {
+        const dictionaryCUN = await getDictionaryForDocumentType('cun_institutions');
+        const validInstitution = await validateTextWithDictionary(dataTyT.institucion, dictionaryCUN);
+
+        if (validInstitution) {
+          output.Institucion_Valida = 'Valido';
+          console.log(`[PROCESS-OPT] Institución CUN VÁLIDA`);
+        } else {
+          output.Institucion_Valida = 'Revision Manual';
+          console.log(`[PROCESS-OPT] Institución CUN REQUIERE REVISIÓN`);
+        }
+      } else {
+        output.Institucion_Valida = 'Extraccion Manual';
+        console.log(`[PROCESS-OPT] Sin datos de institución para validar`);
+      }
+    } catch (institutionError) {
+      console.error(`[PROCESS-OPT] Error validando institución:`, institutionError.message);
+      output.Institucion_Valida = 'Error en validación';
+    }
+
+    if (s3ProcessingId) {
+      await updateProcessingMetadata(s3ProcessingId, 'prueba_tt_extraction', {
+        status: 'completed',
+        processingTime: tytProcessingTime,
+        extractedData: {
+          EK: dataTyT.registroEK || null,
+          documentNumber: dataTyT.numDocumento || null,
+          presentationDate: dataTyT.fechaPresentacion || null,
+          program: dataTyT.programa || null,
+          institution: dataTyT.institucion || null
+        },
+        validationResults: {
+          documentNumberValid: output.Num_Doc_Valido,
+          institutionValid: output.Institucion_Valida
+        },
+        extractionSummary,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (tytError) {
+    console.error(`[PROCESS-OPT] Error crítico procesando TyT:`, tytError.message);
+    setTyTManualExtraction(output, 'Error en procesamiento TyT');
+    
+    if (s3ProcessingId) {
+      await updateProcessingMetadata(s3ProcessingId, 'prueba_tt_extraction', {
+        status: 'processing_error',
+        error: tytError.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
 }
 
 function createSafeOutputStructure(inputData) {
@@ -101,7 +544,7 @@ function createSafeOutputStructure(inputData) {
       Num_Doc_Valido: 'N/A',
     };
   } catch (error) {
-    console.error('[PROCESS] Error en createSafeOutputStructure:', error.message);
+    console.error('[PROCESS-OPT] Error en createSafeOutputStructure:', error.message);
     return createEmergencyOutputStructure(inputData);
   }
 }
@@ -160,19 +603,19 @@ function createDocumentMap(downloadedFiles, documentUrls) {
   
   try {
     if (!Array.isArray(downloadedFiles)) {
-      console.warn('[PROCESS] downloadedFiles no es un array, usando array vacío');
+      console.warn('[PROCESS-OPT] downloadedFiles no es un array, usando array vacío');
       downloadedFiles = [];
     }
     
     if (!documentUrls || typeof documentUrls !== 'object') {
-      console.warn('[PROCESS] documentUrls no es un objeto válido, usando objeto vacío');
+      console.warn('[PROCESS-OPT] documentUrls no es un objeto válido, usando objeto vacío');
       documentUrls = {};
     }
     
     for (const file of downloadedFiles) {
       try {
         if (!file || !file.originalUrl) {
-          console.warn('[PROCESS] Archivo sin URL original, saltando');
+          console.warn('[PROCESS-OPT] Archivo sin URL original, saltando');
           continue;
         }
         
@@ -183,170 +626,14 @@ function createDocumentMap(downloadedFiles, documentUrls) {
           }
         }
       } catch (fileError) {
-        console.error('[PROCESS] Error procesando archivo individual:', fileError.message);
+        console.error('[PROCESS-OPT] Error procesando archivo individual:', fileError.message);
       }
     }
   } catch (error) {
-    console.error('[PROCESS] Error en createDocumentMap:', error.message);
+    console.error('[PROCESS-OPT] Error en createDocumentMap:', error.message);
   }
   
   return documentMap;
-}
-
-async function safeProcessDocumentType(documentMap, docType, output, outputField, inputData) {
-  try {
-    console.log(`[PROCESS] Procesando documento tipo: ${docType}`);
-
-    if (!output || typeof output !== 'object') {
-      throw new Error(`Output object invalid for ${docType}`);
-    }
-    
-    if (!outputField || typeof outputField !== 'string') {
-      throw new Error(`Output field invalid for ${docType}`);
-    }
-    
-    await processDocumentType(documentMap, docType, output, outputField, inputData);
-    
-  } catch (error) {
-    console.error(`[PROCESS] Error crítico procesando ${docType}:`, error.message);
-
-    try {
-      if (output && outputField) {
-        output[outputField] = `Error crítico en procesamiento - Revision Manual (${error.message.substring(0, 50)})`;
-      }
-    } catch (assignError) {
-      console.error(`[PROCESS] Error asignando valor de error para ${docType}:`, assignError.message);
-    }
-  }
-}
-
-async function processDocumentType(documentMap, docType, output, outputField, inputData){
-  try {
-    const file = documentMap[docType];
-
-    if (!file) {
-      console.log(`[PROCESS] No se encontró archivo para tipo: ${docType}`);
-      output[outputField] = "Documento no adjunto";
-      return;
-    }
-
-    if (file.status === 'error') {
-      console.error(`[PROCESS] Error en descarga para ${docType}: ${file.error}`);
-      output[outputField] = determineErrorMessage(file.error);
-      return;
-    }
-
-    console.log(`[PROCESS] Archivo encontrado: ${file.fileName} (${formatBytes(file.size)})`);
-
-    let extractedText = '';
-    try {
-      extractedText = await extractTextFromDocument(file.path, docType);
-      console.log(`[PROCESS] Texto extraído para ${docType}: ${extractedText.length} caracteres`);
-    } catch (textError) {
-      console.error(`[PROCESS] Error extrayendo texto de ${docType}:`, textError.message);
-      output[outputField] = `Error en extracción de texto - Revision Manual`;
-      return;
-    }
-
-    let isValid = false;
-    try {
-      const dictionary = await getDictionaryForDocumentType(docType);
-      isValid = await validateTextWithDictionary(extractedText, dictionary);
-      console.log(`[PROCESS] Validación ${docType}: ${isValid ? 'VÁLIDO' : 'INVÁLIDO'}`);
-    } catch (validationError) {
-      console.error(`[PROCESS] Error en validación de ${docType}:`, validationError.message);
-      output[outputField] = `Error en validación - Revision Manual`;
-      return;
-    }
-
-    if (isValid) {
-      if (docType === 'prueba_tt') {
-        await safeProcessTyTDocument(extractedText, output, inputData);
-      }
-      
-      output[outputField] = "Documento Valido";
-      console.log(`[PROCESS] ${docType} marcado como VÁLIDO`);
-      
-    } else {
-      output[outputField] = "Revision Manual";
-      console.log(`[PROCESS] ${docType} marcado para REVISIÓN MANUAL`);
-    }
-    
-  } catch (error) {
-    console.error(`[PROCESS] Error procesando ${docType}:`, error.message);
-    output[outputField] = determineErrorMessage(error.message);
-  }
-}
-
-async function safeProcessTyTDocument(extractedText, output, inputData) {
-  try {
-    console.log(`[PROCESS] Extrayendo datos específicos de TyT`);
-    
-    const dataTyT = await extractDataTyT(extractedText);
-
-    const hasValidData = dataTyT.registroEK || dataTyT.numDocumento || 
-                        dataTyT.fechaPresentacion || dataTyT.programa || dataTyT.institucion;
-    
-    if (!hasValidData) {
-      setTyTManualExtraction(output, 'Sin datos extraíbles');
-      return;
-    }
-
-    output.EK = safeCopy(dataTyT.registroEK, 'Extraccion Manual');
-    output.Num_Documento_Extraido = safeCopy(dataTyT.numDocumento, 'Extraccion Manual');
-    output.Fecha_Presentacion_Extraida = safeCopy(dataTyT.fechaPresentacion, 'Extraccion Manual');
-    output.Programa_Extraido = safeCopy(dataTyT.programa, 'Extraccion Manual');
-    output.Institucion_Extraida = safeCopy(dataTyT.institucion, 'Extraccion Manual');
-    
-    console.log(`[PROCESS] Datos TyT extraídos:`, {
-      EK: dataTyT.registroEK || 'N/A',
-      numDoc: dataTyT.numDocumento || 'N/A',
-      fecha: dataTyT.fechaPresentacion || 'N/A',
-      programa: dataTyT.programa ? dataTyT.programa.substring(0, 50) + '...' : 'N/A',
-      institucion: dataTyT.institucion ? dataTyT.institucion.substring(0, 50) + '...' : 'N/A'
-    });
-
-    try {
-      const inputDocNumber = safeCopy(inputData?.Numero_de_Documento, '');
-      const extractedDocNumber = safeCopy(dataTyT.numDocumento, '');
-      
-      if (extractedDocNumber && inputDocNumber && extractedDocNumber === inputDocNumber) {
-        output.Num_Doc_Valido = 'Valido';
-        console.log(`[PROCESS] Número de documento COINCIDE`);
-      } else {
-        output.Num_Doc_Valido = 'Revision Manual';
-        console.log(`[PROCESS] Número de documento NO COINCIDE: ${extractedDocNumber} vs ${inputDocNumber}`);
-      }
-    } catch (docValidationError) {
-      console.error(`[PROCESS] Error validando número de documento:`, docValidationError.message);
-      output.Num_Doc_Valido = 'Error en validación';
-    }
-
-    try {
-      if (dataTyT.institucion) {
-        const dictionaryCUN = await getDictionaryForDocumentType('cun_institutions');
-        const validInstitution = await validateTextWithDictionary(dataTyT.institucion, dictionaryCUN);
-
-        if (validInstitution) {
-          output.Institucion_Valida = 'Valido';
-          console.log(`[PROCESS] Institución CUN VÁLIDA`);
-        } else {
-          output.Institucion_Valida = 'Revision Manual';
-          console.log(`[PROCESS] Institución CUN REQUIERE REVISIÓN`);
-        }
-      } else {
-        output.Institucion_Valida = 'Extraccion Manual';
-        console.log(`[PROCESS] Sin datos de institución para validar`);
-      }
-    } catch (institutionError) {
-      console.error(`[PROCESS] Error validando institución:`, institutionError.message);
-      output.Institucion_Valida = 'Error en validación';
-    }
-    
-  } catch (tytError) {
-    console.error(`[PROCESS] Error crítico procesando TyT:`, tytError.message);
-    setTyTManualExtraction(output, 'Error en procesamiento TyT');
-  }
 }
 
 function setTyTManualExtraction(output, reason) {
@@ -358,7 +645,7 @@ function setTyTManualExtraction(output, reason) {
   output.Num_Doc_Valido = 'Extraccion Manual';
   output.Institucion_Valida = 'Extraccion Manual';
   
-  console.log(`[PROCESS] TyT marcado para extracción manual: ${reason}`);
+  console.log(`[PROCESS-OPT] TyT marcado para extracción manual: ${reason}`);
 }
 
 function determineErrorMessage(errorString) {
@@ -385,6 +672,12 @@ function determineErrorMessage(errorString) {
       return "Documento muy grande - Revision Manual";
     } else if (error.includes('unsupported_file_type')) {
       return "Tipo de archivo no soportado - Revision Manual";
+    } else if (error.includes('s3_upload_failed')) {
+      return "Error subiendo a S3 - Revision Manual";
+    } else if (error.includes('pdf_processing_failed')) {
+      return "Error procesando PDF - Revision Manual";
+    } else if (error.includes('textract_timeout')) {
+      return "Tiempo de análisis agotado - Revision Manual";
     } else {
       return "Revision Manual";
     }
@@ -420,7 +713,7 @@ function validateOutputIntegrity(output) {
 }
 
 function repairOutputStructure(output, inputData) {
-  console.log('[PROCESS] Reparando estructura de output...');
+  console.log('[PROCESS-OPT] Reparando estructura de output...');
   
   const defaultValues = {
     ID: 'repair_needed',
@@ -455,7 +748,7 @@ function repairOutputStructure(output, inputData) {
   for (const [key, defaultValue] of Object.entries(defaultValues)) {
     if (!(key in output) || output[key] === null || output[key] === undefined) {
       output[key] = defaultValue;
-      console.log(`[PROCESS] Campo ${key} reparado con valor: ${defaultValue}`);
+      console.log(`[PROCESS-OPT] Campo ${key} reparado con valor: ${defaultValue}`);
     }
   }
 
@@ -469,10 +762,10 @@ function repairOutputStructure(output, inputData) {
       }
     }
   } catch (repairError) {
-    console.error('[PROCESS] Error durante reparación:', repairError.message);
+    console.error('[PROCESS-OPT] Error durante reparación:', repairError.message);
   }
   
-  console.log('[PROCESS] ✓ Estructura de output reparada');
+  console.log('[PROCESS-OPT] ✓ Estructura de output reparada');
 }
 
 function formatBytes(bytes) {
@@ -489,4 +782,4 @@ function formatBytes(bytes) {
 
 module.exports = {
   processDocuments
-}
+};

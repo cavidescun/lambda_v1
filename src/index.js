@@ -1,8 +1,7 @@
 const { extractDocumentUrls } = require("./services/extractUrl");
 const { downloadDocuments } = require("./services/downloadDocuments");
-const { cleanupTempFiles } = require("./utils/tempStorage");
 const { processDocuments } = require("./services/processDocument");
-// const { insertDBData } = require("./services/databaseService");
+const { uploadToS3, initializeS3Processing, cleanupS3Processing } = require("./services/s3Service");
 
 exports.handler = async (event, context) => {
   const startTime = Date.now();
@@ -11,7 +10,7 @@ exports.handler = async (event, context) => {
 
   try {
     console.log("[MAIN] ========================================");
-    console.log("[MAIN] Iniciando procesamiento de documentos...");
+    console.log("[MAIN] Iniciando procesamiento optimizado de documentos...");
     console.log(`[MAIN] Tiempo de inicio: ${new Date().toISOString()}`);
     console.log(
       `[MAIN] Lambda timeout configurado: ${context.getRemainingTimeInMillis()}ms`,
@@ -40,13 +39,12 @@ exports.handler = async (event, context) => {
         "[MAIN] ✗ Error procesando request body:",
         parseError.message,
       );
-
+      
       requestBody = {
         ID: "parse_error",
         Nombre_completo: "Error en parseo",
         error_parsing: parseError.message,
       };
-
       console.log("[MAIN] Continuando con estructura básica creada");
     }
 
@@ -54,6 +52,7 @@ exports.handler = async (event, context) => {
     try {
       documentsUrl = extractDocumentUrls(requestBody);
       const urlCount = Object.keys(documentsUrl).length;
+
 
       console.log(`[MAIN] ✓ ${urlCount} URL(s) de documentos extraídas`);
 
@@ -66,13 +65,26 @@ exports.handler = async (event, context) => {
       console.log("[MAIN] Continuando sin documentos para procesar");
     }
 
+    let s3ProcessingId = null;
+    try {
+      s3ProcessingId = await initializeS3Processing(
+        requestBody.ID || "unknown",
+      );
+      console.log(`[MAIN] ✓ S3 processing inicializado: ${s3ProcessingId}`);
+    } catch (s3InitError) {
+      console.error("[MAIN] ✗ Error inicializando S3:", s3InitError.message);
+    }
+
     let downloadedFiles = [];
+    let s3UploadPromises = [];
+
     try {
       if (Object.keys(documentsUrl).length > 0) {
         const downloadStartTime = Date.now();
         const remainingTime = context.getRemainingTimeInMillis();
 
         console.log(
+
           `[MAIN] Iniciando descarga de documentos (tiempo restante: ${remainingTime}ms)`,
         );
 
@@ -107,17 +119,16 @@ exports.handler = async (event, context) => {
         status: "error",
         error: `DOWNLOAD_SYSTEM_ERROR: ${downloadError.message}`,
       }));
-
+      
       console.log("[MAIN] Continuando con archivos marcados como error");
     }
 
     let result = createDefaultResult(requestBody);
+    const processStartTime = Date.now();
+
     try {
-      const processStartTime = Date.now();
       const remainingTime = context.getRemainingTimeInMillis();
 
-      console.log(
-        `[MAIN] Iniciando procesamiento de documentos (tiempo restante: ${remainingTime}ms)`,
       );
 
       result = await processDocuments(
@@ -136,30 +147,60 @@ exports.handler = async (event, context) => {
       result.processing_error = processError.message;
       result.status =
         "Error en procesamiento - todos los documentos requieren revision manual";
-
       markAllDocumentsAsError(
         result,
         "Error en procesamiento - Revision Manual",
       );
-
       console.log("[MAIN] Continuando con resultado de error estructurado");
     }
 
-    // 5. Insertar en base de datos (opcional) con manejo de errores
-    try {
-      // Código de base de datos comentado, pero si se habilita:
-      // const insertDBResult = await insertDBData(result);
-      // if (!insertDBResult.success) {
-      //   console.error("[MAIN] ✗ Error insertando en base de datos, pero continuando");
-      //   result.db_insert_status = "Error en inserción DB";
-      // } else {
-      //   result.db_insert_status = "Exitoso";
-      // }
-    } catch (dbError) {
-      console.error("[MAIN] ✗ Error de base de datos:", dbError.message);
-      result.db_error = dbError.message;
-      result.db_insert_status = "Error en DB - datos no guardados";
-      console.log("[MAIN] Continuando sin guardar en DB");
+    if (s3UploadPromises.length > 0) {
+      try {
+        const uploadTimeout = Math.min(
+          context.getRemainingTimeInMillis() - 5000,
+          30000,
+        );
+        console.log(
+          `[MAIN] Esperando finalización de uploads S3 (timeout: ${uploadTimeout}ms)`,
+        );
+
+        const uploadResults = await Promise.allSettled(
+          s3UploadPromises.map((promise) =>
+            Promise.race([
+              promise,
+              new Promise((_, reject) =>
+                setTimeout(
+                  () => reject(new Error("S3_UPLOAD_TIMEOUT")),
+                  uploadTimeout,
+                ),
+              ),
+            ]),
+          ),
+        );
+
+        const successfulUploads = uploadResults.filter(
+          (r) => r.status === "fulfilled",
+        ).length;
+        const failedUploads = uploadResults.filter(
+          (r) => r.status === "rejected",
+        ).length;
+
+        console.log(
+          `[MAIN] ✓ S3 uploads completados: ${successfulUploads} exitosos, ${failedUploads} fallidos`,
+        );
+
+        result.s3_upload_status = {
+          successful: successfulUploads,
+          failed: failedUploads,
+          processing_id: s3ProcessingId,
+        };
+      } catch (uploadWaitError) {
+        console.error(
+          "[MAIN] ✗ Error esperando uploads S3:",
+          uploadWaitError.message,
+        );
+        result.s3_upload_error = uploadWaitError.message;
+      }
     }
 
     const totalTime = Date.now() - startTime;
@@ -188,7 +229,6 @@ exports.handler = async (event, context) => {
       request_id: requestBody?.ID || "unknown",
     });
   } finally {
-    // Limpieza SIEMPRE se ejecuta, con manejo de errores
     try {
       await cleanupTempFiles();
       console.log("[MAIN] ✓ Limpieza de archivos temporales completada");
@@ -201,7 +241,6 @@ exports.handler = async (event, context) => {
     console.log(`[MAIN] Proceso finalizado - Tiempo total: ${finalTime}ms`);
     console.log("[MAIN] ========================================");
 
-    // Garantizar que SIEMPRE retornamos una respuesta
     if (!responseToReturn) {
       console.error(
         "[MAIN] ⚠️ No se generó respuesta, creando respuesta de emergencia",
@@ -217,7 +256,6 @@ exports.handler = async (event, context) => {
   return responseToReturn;
 };
 
-// Función para crear resultado por defecto
 function createDefaultResult(requestBody) {
   return {
     ID: requestBody?.ID || "unknown",
@@ -257,11 +295,8 @@ function createDefaultResult(requestBody) {
   };
 }
 
-// Función para crear resultado de emergencia
 function createEmergencyResult(requestBody, error) {
   const baseResult = createDefaultResult(requestBody);
-
-  // Marcar todos los documentos como error crítico
   markAllDocumentsAsError(
     baseResult,
     "Error crítico del sistema - Revision Manual",
@@ -277,7 +312,6 @@ function createEmergencyResult(requestBody, error) {
   };
 }
 
-// Función para marcar todos los documentos como error
 function markAllDocumentsAsError(result, errorMessage) {
   const documentFields = [
     "FotocopiaDocumento",
@@ -296,7 +330,6 @@ function markAllDocumentsAsError(result, errorMessage) {
     result[field] = errorMessage;
   });
 
-  // Marcar campos de extracción como manual
   result.EK = "Extraccion Manual - Error Sistema";
   result.Num_Documento_Extraido = "Extraccion Manual - Error Sistema";
   result.Institucion_Extraida = "Extraccion Manual - Error Sistema";
@@ -307,7 +340,6 @@ function markAllDocumentsAsError(result, errorMessage) {
 }
 
 function formatResponse(statusCode, body) {
-  // Garantizar que el body sea un objeto válido
   let safeBody;
   try {
     safeBody =
@@ -341,8 +373,6 @@ function formatResponse(statusCode, body) {
   };
 
   console.log(`[MAIN] Respuesta generada - Status: ${statusCode}`);
-
-  // Log adicional para errores
   if (statusCode >= 400) {
     console.error(
       `[MAIN] Respuesta de error: ${JSON.stringify(safeBody, null, 2)}`,
@@ -351,4 +381,3 @@ function formatResponse(statusCode, body) {
 
   return response;
 }
-
