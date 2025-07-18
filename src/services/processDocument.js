@@ -386,7 +386,7 @@ function determineErrorMessage(errorString) {
     } else if (error.includes('unsupported_file_type')) {
       return "Tipo de archivo no soportado - Revision Manual";
     } else {
-      return "Error en procesamiento - Revision Manual";
+      return "Revision Manual";
     }
   } catch (msgError) {
     return "Error desconocido - Revision Manual";
