@@ -2,7 +2,7 @@ const fs = require("fs-extra");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
-
+//Comentario de prueba
 const tempDirectories = [];
 async function createTempDirectory() {
   const timestamp = Date.now();
